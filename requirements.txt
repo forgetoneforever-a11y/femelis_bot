@@ -1,5 +1,4 @@
-pyTelegramBotAPI
-google-genai
-python-dotenv
 fastapi
 uvicorn
+google-genai
+pyTelegramBotAPI
