@@ -19,7 +19,7 @@ def process_webhook(update: dict):
     if "message" in update or "text" in update.get("message", {}):
         message = telebot.types.Update.de_json(update).message
         user_text = message.text
-        
+
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -28,7 +28,7 @@ def process_webhook(update: dict):
             bot.reply_to(message, response.text)
         except Exception as e:
             bot.reply_to(message, f"Ошибка при обращении к ИИ: {e}")
-            
+
     return {"status": "ok"}
 
 @app.get("/")
