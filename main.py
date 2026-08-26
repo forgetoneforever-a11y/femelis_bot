@@ -11,7 +11,7 @@ load_dotenv()
 # Загружаем ключи из переменных окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Ваш Telegram ID для получения обращений в поддержку
 ADMIN_CHAT_ID = 8870678654 
@@ -22,7 +22,7 @@ app = FastAPI()
 
 # Хранилища в памяти
 user_states = {}        # Режимы работы пользователей (например, отправка жалобы)
-user_models = {}        # Выбранная модель: "gemini" или "deepseek" (по умолчанию gemini)
+user_models = {}        # Выбранная модель: "gemini" или "groq" (по умолчанию gemini)
 
 def get_main_keyboard():
     """Главная клавиатура бота"""
@@ -35,10 +35,10 @@ def get_main_keyboard():
     return markup
 
 def get_models_inline_keyboard():
-    """Инлайн-кнопки для выбора между Gemini и DeepSeek"""
+    """Инлайн-кнопки для выбора между Gemini и Groq (Llama 3)"""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✨ Gemini", callback_data="model_gemini"))
-    markup.add(types.InlineKeyboardButton("🧠 DeepSeek", callback_data="model_deepseek"))
+    markup.add(types.InlineKeyboardButton("⚡ Groq (Llama 3)", callback_data="model_groq"))
     return markup
 
 @app.post(f"/{TELEGRAM_TOKEN}")
@@ -57,7 +57,7 @@ def process_webhook(update: dict):
             
             model_names = {
                 "gemini": "Gemini ✨",
-                "deepseek": "DeepSeek 🧠"
+                "groq": "Groq (Llama 3) ⚡"
             }
             
             bot.answer_callback_query(callback.id, text=f"Модель изменена на {model_names.get(chosen_model)}")
@@ -105,7 +105,7 @@ def process_webhook(update: dict):
             user_states[user_id] = "normal"
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент.\n\n"
-                "Ты можешь переключаться между **Gemini** и **DeepSeek** через меню «Настройки»!"
+                "Ты можешь переключаться между **Gemini** и **Groq (Llama 3)** через меню «Настройки»!"
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
@@ -149,7 +149,7 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Генерация ответа через выбранную модель (Gemini или DeepSeek)
+        # Генерация ответа через выбранную модель (Gemini или Groq)
         if user_text:
             active_model = user_models.get(user_id, "gemini")
             ai_response = "Ошибка генерации ответа."
@@ -162,18 +162,26 @@ def process_webhook(update: dict):
                     )
                     ai_response = response.text
 
-                elif active_model == "deepseek":
-                    if not DEEPSEEK_API_KEY:
-                        ai_response = "⚠️ API-ключ для DeepSeek (`DEEPSEEK_API_KEY`) не настроен в переменных окружения на Render."
+                elif active_model == "groq":
+                    if not GROQ_API_KEY:
+                        ai_response = "⚠️ API-ключ для Groq (`GROQ_API_KEY`) не настроен в переменных окружения на Render."
                     else:
-                        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+                        headers = {
+                            "Authorization": f"Bearer {GROQ_API_KEY}",
+                            "Content-Type": "application/json"
+                        }
                         json_data = {
-                            "model": "deepseek-chat",
+                            "model": "llama-3.3-70b-versatile",
                             "messages": [{"role": "user", "content": user_text}]
                         }
                         with httpx.Client() as httpx_client:
-                            res = httpx_client.post("https://api.deepseek.com/chat/completions", headers=headers, json=json_data, timeout=30)
-                            ai_response = res.json()["choices"][0]["message"]["content"]
+                            res = httpx_client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data, timeout=30)
+                            
+                            if res.status_code == 200:
+                                res_json = res.json()
+                                ai_response = res_json["choices"][0]["message"]["content"]
+                            else:
+                                ai_response = f"⚠️ Ошибка API Groq (код {res.status_code}):\n{res.text}"
 
                 bot.reply_to(message, ai_response, reply_markup=get_main_keyboard())
 
