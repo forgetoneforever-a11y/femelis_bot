@@ -171,7 +171,7 @@ def process_webhook(update: dict):
                             "Content-Type": "application/json"
                         }
                         json_data = {
-                            "model": "llama-3.1-8b-instant",
+                            "model": "llama-3.1-70b-versatile",
                             "messages": [{"role": "user", "content": user_text}]
                         }
                         with httpx.Client() as httpx_client:
