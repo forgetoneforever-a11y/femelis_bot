@@ -157,7 +157,7 @@ def process_webhook(update: dict):
             try:
                 if active_model == "gemini":
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=user_text,
                     )
                     ai_response = response.text
