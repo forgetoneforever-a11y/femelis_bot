@@ -1,5 +1,6 @@
 fastapi
 uvicorn
-google-genai
 pyTelegramBotAPI
+google-genai
 python-dotenv
+httpx
