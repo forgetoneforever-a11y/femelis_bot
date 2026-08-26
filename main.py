@@ -35,10 +35,10 @@ def get_main_keyboard():
     return markup
 
 def get_models_inline_keyboard():
-    """Инлайн-кнопки для выбора между Gemini и Groq (Llama 3)"""
+    """Инлайн-кнопки для выбора между Gemini и Groq"""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✨ Gemini", callback_data="model_gemini"))
-    markup.add(types.InlineKeyboardButton("⚡ Groq (Llama 3)", callback_data="model_groq"))
+    markup.add(types.InlineKeyboardButton("⚡ Groq (Llama)", callback_data="model_groq"))
     return markup
 
 @app.post(f"/{TELEGRAM_TOKEN}")
@@ -57,7 +57,7 @@ def process_webhook(update: dict):
             
             model_names = {
                 "gemini": "Gemini ✨",
-                "groq": "Groq (Llama 3) ⚡"
+                "groq": "Groq (Llama) ⚡"
             }
             
             bot.answer_callback_query(callback.id, text=f"Модель изменена на {model_names.get(chosen_model)}")
@@ -105,7 +105,7 @@ def process_webhook(update: dict):
             user_states[user_id] = "normal"
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент.\n\n"
-                "Ты можешь переключаться между **Gemini** и **Groq (Llama 3)** через меню «Настройки»!"
+                "Ты можешь переключаться между **Gemini** и **Groq** через меню «Настройки»!"
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
@@ -171,7 +171,7 @@ def process_webhook(update: dict):
                             "Content-Type": "application/json"
                         }
                         json_data = {
-                            "model": "llama-3.3-70b-versatile",
+                            "model": "llama-3.1-8b-instant",
                             "messages": [{"role": "user", "content": user_text}]
                         }
                         with httpx.Client() as httpx_client:
