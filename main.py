@@ -11,15 +11,14 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Указываем ваш Telegram ID напрямую для получения жалоб
+# Указываем ваш Telegram ID для получения жалоб
 ADMIN_CHAT_ID = 8870678654 
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = FastAPI()
 
-# Простой словарь в памяти для отслеживания режима "Отправка жалобы"
-# (Для продакшена лучше использовать БД, но для начала этого достаточно)
+# Словарь для отслеживания режима отправки жалобы
 user_states = {}
 
 def get_main_keyboard():
@@ -37,12 +36,19 @@ def process_webhook(update: dict):
         message = telebot.types.Update.de_json(update).message
         user_text = message.text
         user_id = message.from_user.id
-        username = message.from_user.username or message.from_user.first_name
+        
+        # Получаем подробные данные о пользователе
+        first_name = message.from_user.first_name or ""
+        last_name = message.from_user.last_name or ""
+        username = message.from_user.username
+        
+        # Красиво формируем имя для отображения
+        full_name = f"{first_name} {last_name}".strip()
+        user_tag = f"@{username}" if username else "нет юзернейма"
 
-        # 1. Ответ администратора на жалобу (когда вы пишете /reply ID ТЕКСТ)
+        # 1. Ответ администратора на жалобу через команду /reply
         if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/reply "):
             try:
-                # Парсим команду: /reply 12345 Ответ на жалобу
                 parts = user_text.split(" ", 2)
                 target_user_id = parts[1]
                 reply_text = parts[2]
@@ -60,7 +66,7 @@ def process_webhook(update: dict):
 
         # 2. Обработка команды /start или кнопки "Начать"
         if user_text and (user_text == "🚀 Начать" or user_text.startswith("/start")):
-            user_states[user_id] = "normal" # Сбрасываем статус
+            user_states[user_id] = "normal"
             welcome_text = (
                 "👋 **Привет!** Я твой персональный ИИ-ассистент на базе Gemini.\n\n"
                 "Задай мне любой вопрос, и я с радостью на него отвечу!"
@@ -70,7 +76,7 @@ def process_webhook(update: dict):
 
         # 3. Нажатие на кнопку "Жалоба / Поддержка"
         if user_text == "⚠️ Жалоба / Поддержка":
-            user_states[user_id] = "waiting_for_ticket" # Переводим пользователя в режим жалобы
+            user_states[user_id] = "waiting_for_ticket"
             support_text = (
                 "💬 **Служба поддержки**\n\n"
                 "Пожалуйста, опишите вашу проблему или оставьте жалобу **одним сообщением**, "
@@ -79,22 +85,22 @@ def process_webhook(update: dict):
             bot.reply_to(message, support_text, parse_mode="Markdown", reply_markup=types.ReplyKeyboardRemove())
             return {"status": "ok"}
 
-        # 4. Если пользователь находится в режиме отправки жалобы (вводит текст жалобы)
+        # 4. Если пользователь отправляет текст жалобы
         if user_states.get(user_id) == "waiting_for_ticket" and user_text:
-            user_states[user_id] = "normal" # Сбрасываем статус после отправки
+            user_states[user_id] = "normal"
             
-            # Формируем сообщение для администратора
+            # Формируем расширенное сообщение для вас (администратора)
             admin_message = (
-                f"🚨 **Новое обращение!**\n\n"
-                f"👤 От: @{username}\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"💬 Текст: {user_text}\n\n"
-                f"_(Чтобы ответить, скопируйте команду ниже и добавьте текст ответа)_:\n"
-                f"`/reply {user_id} Ваш текст`"
+                f"🚨 **Новое обращение в поддержку!**\n\n"
+                f"👤 **Имя:** {full_name}\n"
+                f"🔗 **Юзернейм:** {user_tag}\n"
+                f"🆔 **ID:** `{user_id}`\n"
+                f"💬 **Текст жалобы:** {user_text}\n\n"
+                f"_(Для ответа скопируйте команду ниже)_:\n"
+                f"`/reply {user_id} Ваш текст ответа`"
             )
             
             try:
-                # Отправляем сообщение вам (админу)
                 bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="Markdown")
                 bot.reply_to(message, "✅ Ваше сообщение успешно отправлено администратору. Ожидайте ответа!", reply_markup=get_main_keyboard())
             except Exception as e:
@@ -102,7 +108,7 @@ def process_webhook(update: dict):
                 
             return {"status": "ok"}
 
-        # 5. Обычные текстовые сообщения (если это не команда и не жалоба) отправляем в Gemini
+        # 5. Обычные сообщения отправляем в Gemini
         if user_text:
             try:
                 response = client.models.generate_content(
