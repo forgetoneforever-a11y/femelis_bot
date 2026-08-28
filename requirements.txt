@@ -3,4 +3,4 @@ uvicorn
 pyTelegramBotAPI
 google-genai
 python-dotenv
-httpx
+pydantic
