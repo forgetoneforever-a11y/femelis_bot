@@ -4,14 +4,12 @@ from fastapi import FastAPI
 import telebot
 from telebot import types
 from google import genai
-import httpx
 
 load_dotenv()
 
 # Загружаем ключи из переменных окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Ваш Telegram ID для получения обращений в поддержку
 ADMIN_CHAT_ID = 8870678654 
@@ -20,56 +18,22 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = FastAPI()
 
-# Хранилища в памяти
-user_states = {}        # Режимы работы пользователей (например, отправка жалобы)
-user_models = {}        # Выбранная модель: "gemini" или "groq" (по умолчанию gemini)
+# Хранилище состояний пользователей
+user_states = {}
 
 def get_main_keyboard():
     """Главная клавиатура бота"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_start = types.KeyboardButton("🚀 Начать")
-    btn_settings = types.KeyboardButton("⚙️ Настройки")
     btn_support = types.KeyboardButton("⚠️ Жалоба / Поддержка")
-    markup.add(btn_start, btn_settings)
+    markup.add(btn_start)
     markup.add(btn_support)
-    return markup
-
-def get_models_inline_keyboard():
-    """Инлайн-кнопки для выбора между Gemini и Groq"""
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✨ Gemini", callback_data="model_gemini"))
-    markup.add(types.InlineKeyboardButton("⚡ Groq (Llama)", callback_data="model_groq"))
     return markup
 
 @app.post(f"/{TELEGRAM_TOKEN}")
 def process_webhook(update: dict):
     """Эндпоинт для обработки входящих обновлений от Telegram"""
     
-    # 1. Обработка нажатий на инлайн-кнопки (переключение моделей)
-    if "callback_query" in update:
-        callback = telebot.types.Update.de_json(update).callback_query
-        user_id = callback.from_user.id
-        data = callback.data
-
-        if data.startswith("model_"):
-            chosen_model = data.split("_")[1]
-            user_models[user_id] = chosen_model
-            
-            model_names = {
-                "gemini": "Gemini ✨",
-                "groq": "Groq (Llama) ⚡"
-            }
-            
-            bot.answer_callback_query(callback.id, text=f"Модель изменена на {model_names.get(chosen_model)}")
-            bot.edit_message_text(
-                chat_id=callback.message.chat.id,
-                message_id=callback.message.message_id,
-                text=f"✅ Активная модель успешно изменена!\n\nТекущая нейросеть: **{model_names.get(chosen_model)}**",
-                parse_mode="Markdown"
-            )
-        return {"status": "ok"}
-
-    # 2. Обработка текстовых сообщений
     if "message" in update:
         message = telebot.types.Update.de_json(update).message
         user_text = message.text
@@ -103,21 +67,8 @@ def process_webhook(update: dict):
         # Команда /start или кнопка "Начать"
         if user_text and (user_text == "🚀 Начать" or user_text.startswith("/start")):
             user_states[user_id] = "normal"
-            welcome_text = (
-                "👋 **Привет!** Я твой ИИ-ассистент.\n\n"
-                "Ты можешь переключаться между **Gemini** и **Groq** через меню «Настройки»!"
-            )
+            welcome_text = "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini. Задай мне любой вопрос или отправь картинку!"
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
-            return {"status": "ok"}
-
-        # Кнопка "Настройки"
-        if user_text == "⚙️ Настройки":
-            bot.reply_to(
-                message, 
-                "⚙️ **Настройки бота**\n\nВыберите языковую модель для общения:", 
-                parse_mode="Markdown", 
-                reply_markup=get_models_inline_keyboard()
-            )
             return {"status": "ok"}
 
         # Кнопка "Жалоба / Поддержка"
@@ -149,44 +100,46 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Генерация ответа через выбранную модель (Gemini или Groq)
+        # Генерация ответа через Gemini (работает с текстом стабильно)
         if user_text:
-            active_model = user_models.get(user_id, "gemini")
-            ai_response = "Ошибка генерации ответа."
-
             try:
-                if active_model == "gemini":
-                    response = client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=user_text,
-                    )
-                    ai_response = response.text
-
-                elif active_model == "groq":
-                    if not GROQ_API_KEY:
-                        ai_response = "⚠️ API-ключ для Groq (`GROQ_API_KEY`) не настроен в переменных окружения на Render."
-                    else:
-                        headers = {
-                            "Authorization": f"Bearer {GROQ_API_KEY}",
-                            "Content-Type": "application/json"
-                        }
-                        json_data = {
-                            "model": "llama-3.1-8b-instant",
-                            "messages": [{"role": "user", "content": user_text}]
-                        }
-                        with httpx.Client() as httpx_client:
-                            res = httpx_client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data, timeout=30)
-                            
-                            if res.status_code == 200:
-                                res_json = res.json()
-                                ai_response = res_json["choices"][0]["message"]["content"]
-                            else:
-                                ai_response = f"⚠️ Ошибка API Groq (код {res.status_code}):\n{res.text}"
-
+                response = client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=user_text,
+                )
+                ai_response = response.text
                 bot.reply_to(message, ai_response, reply_markup=get_main_keyboard())
 
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", reply_markup=get_main_keyboard())
+
+    # Обработка фотографий (мультимодальность Gemini)
+    if "message" in update and "photo" in update["message"]:
+        message = telebot.types.Update.de_json(update).message
+        try:
+            photo = message.photo[-1]
+            file_info = bot.get_file(photo.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+
+            temp_filename = "temp_image.jpg"
+            with open(temp_filename, "wb") as f:
+                f.write(downloaded_file)
+
+            user_prompt = message.caption or "Опиши, что изображено на этой фотографии."
+
+            image_file = client.files.upload(file=temp_filename)
+            response = client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=[image_file, user_prompt]
+            )
+
+            bot.reply_to(message, response.text, reply_markup=get_main_keyboard())
+
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+
+        except Exception as e:
+            bot.reply_to(message, f"❌ Не удалось обработать изображение: {e}", reply_markup=get_main_keyboard())
 
     return {"status": "ok"}
 
