@@ -23,10 +23,11 @@ user_states = {}
 
 def get_main_keyboard():
     """Главная клавиатура бота"""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn_start = types.KeyboardButton("🚀 Начать")
+    btn_profile = types.KeyboardButton("👤 О себе")
     btn_support = types.KeyboardButton("⚠️ Жалоба / Поддержка")
-    markup.add(btn_start)
+    markup.add(btn_start, btn_profile)
     markup.add(btn_support)
     return markup
 
@@ -43,6 +44,7 @@ def process_webhook(update: dict):
         first_name = message.from_user.first_name or ""
         last_name = message.from_user.last_name or ""
         username = message.from_user.username
+        language_code = message.from_user.language_code or "не указан"
         
         full_name = f"{first_name} {last_name}".strip()
         user_tag = f"@{username}" if username else "нет юзернейма"
@@ -70,9 +72,22 @@ def process_webhook(update: dict):
             user_states[user_id] = "normal"
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini.\n\n"
-                "💬 Задавай текстовые вопросы или **отправляй картинки/скриншоты** — я могу распознавать на них текст и отвечать по их содержимому!"
+                "💬 Задавай текстовые вопросы или **отправляй картинки/скриншоты** — я умею распознавать текст и анализировать изображения!"
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return {"status": "ok"}
+
+        # Кнопка "О себе"
+        if user_text == "👤 О себе":
+            profile_text = (
+                f"👤 **Информация о вашем аккаунте:**\n\n"
+                f"🆔 **ID:** `{user_id}`\n"
+                f"📌 **Имя:** {full_name}\n"
+                f"🔗 **Username:** {user_tag}\n"
+                f"🌐 **Язык Telegram:** `{language_code}`\n\n"
+                f"*Примечание: точная страна и номер телефона скрыты настройками безопасности Telegram.*"
+            )
+            bot.reply_to(message, profile_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
         # Кнопка "Жалоба / Поддержка"
@@ -104,7 +119,7 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Генерация ответа через текст
+        # Генерация ответа через текст (Gemini)
         if user_text:
             try:
                 response = client.models.generate_content(
@@ -117,11 +132,10 @@ def process_webhook(update: dict):
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", reply_markup=get_main_keyboard())
 
-    # 2. Обработка фотографий (распознавание текста и анализ изображения)
+    # 2. Обработка фотографий
     if "message" in update and "photo" in update["message"]:
         message = telebot.types.Update.de_json(update).message
         try:
-            # Скачиваем фото в наилучшем качестве
             photo = message.photo[-1]
             file_info = bot.get_file(photo.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -130,11 +144,8 @@ def process_webhook(update: dict):
             with open(temp_filename, "wb") as f:
                 f.write(downloaded_file)
 
-            # Если пользователь написал текст вместе с картинкой — используем его,
-            # иначе даем инструкцию по умолчанию: распознать весь текст на фото.
             user_prompt = message.caption or "Распознай и выпиши весь текст, который изображен на этой фотографии, и ответь на вопросы, если они там есть."
 
-            # Загружаем файл в Gemini для анализа
             image_file = client.files.upload(file=temp_filename)
             response = client.models.generate_content(
                 model='gemini-3.6-flash',
@@ -143,7 +154,6 @@ def process_webhook(update: dict):
 
             bot.reply_to(message, response.text, reply_markup=get_main_keyboard())
 
-            # Удаляем временный файл после отправки ответа
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
