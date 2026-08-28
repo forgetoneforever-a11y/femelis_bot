@@ -34,7 +34,8 @@ def get_main_keyboard():
 def process_webhook(update: dict):
     """Эндпоинт для обработки входящих обновлений от Telegram"""
     
-    if "message" in update:
+    # 1. Обработка текстовых сообщений
+    if "message" in update and "text" in update["message"]:
         message = telebot.types.Update.de_json(update).message
         user_text = message.text
         user_id = message.from_user.id
@@ -67,7 +68,10 @@ def process_webhook(update: dict):
         # Команда /start или кнопка "Начать"
         if user_text and (user_text == "🚀 Начать" or user_text.startswith("/start")):
             user_states[user_id] = "normal"
-            welcome_text = "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini. Задай мне любой вопрос или отправь картинку!"
+            welcome_text = (
+                "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini.\n\n"
+                "💬 Задавай текстовые вопросы или **отправляй картинки/скриншоты** — я могу распознавать на них текст и отвечать по их содержимому!"
+            )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
@@ -100,7 +104,7 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Генерация ответа через Gemini (работает с текстом стабильно)
+        # Генерация ответа через текст
         if user_text:
             try:
                 response = client.models.generate_content(
@@ -113,10 +117,11 @@ def process_webhook(update: dict):
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", reply_markup=get_main_keyboard())
 
-    # Обработка фотографий (мультимодальность Gemini)
+    # 2. Обработка фотографий (распознавание текста и анализ изображения)
     if "message" in update and "photo" in update["message"]:
         message = telebot.types.Update.de_json(update).message
         try:
+            # Скачиваем фото в наилучшем качестве
             photo = message.photo[-1]
             file_info = bot.get_file(photo.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -125,8 +130,11 @@ def process_webhook(update: dict):
             with open(temp_filename, "wb") as f:
                 f.write(downloaded_file)
 
-            user_prompt = message.caption or "Опиши, что изображено на этой фотографии."
+            # Если пользователь написал текст вместе с картинкой — используем его,
+            # иначе даем инструкцию по умолчанию: распознать весь текст на фото.
+            user_prompt = message.caption or "Распознай и выпиши весь текст, который изображен на этой фотографии, и ответь на вопросы, если они там есть."
 
+            # Загружаем файл в Gemini для анализа
             image_file = client.files.upload(file=temp_filename)
             response = client.models.generate_content(
                 model='gemini-3.6-flash',
@@ -135,6 +143,7 @@ def process_webhook(update: dict):
 
             bot.reply_to(message, response.text, reply_markup=get_main_keyboard())
 
+            # Удаляем временный файл после отправки ответа
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
