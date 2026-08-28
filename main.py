@@ -4,6 +4,7 @@ from fastapi import FastAPI
 import telebot
 from telebot import types
 from google import genai
+from google.genai import types as genai_types
 
 load_dotenv()
 
@@ -18,23 +19,83 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = FastAPI()
 
-# Хранилище состояний пользователей
+# Хранилище состояний, активных сессий чата и выбранных ролей для каждого пользователя
 user_states = {}
+user_chats = {}
+user_roles = {}
+
+# Предустановленные роли (системные инструкции)
+ROLES = {
+    "default": "Ты полезный, дружелюбный и эрудированный ИИ-ассистент.",
+    "programmer": "Ты строгий, профессиональный Senior-программист. Отвечай кратко, пиши чистый код, указывай на ошибки в архитектуре и логике без лишней «воды».",
+    "sarcastic": "Ты саркастичный и ироничный собеседник. Отвечай с черным юмором и легким пренебрежением к человеческой лени, но по делу.",
+    "teacher": "Ты терпеливый и мудрый преподаватель. Объясняй сложные вещи простыми словами, приводи жизненные аналогии и задавай наводящие вопросы."
+}
+
+def get_user_chat(user_id):
+    """Создает или возвращает существующую сессию чата с учетом выбранной роли пользователя"""
+    if user_id not in user_chats:
+        role_key = user_roles.get(user_id, "default")
+        system_instruction = ROLES.get(role_key, ROLES["default"])
+        
+        # Создаем чат с системной инструкцией (ролью)
+        user_chats[user_id] = client.chats.create(
+            model="gemini-3.6-flash",
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
+        )
+    return user_chats[user_id]
+
+def reset_user_chat(user_id):
+    """Сбрасывает сессию чата (при изменении роли или новом старте)"""
+    if user_id in user_chats:
+        del user_chats[user_id]
+    return get_user_chat(user_id)
 
 def get_main_keyboard():
     """Главная клавиатура бота"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn_start = types.KeyboardButton("🚀 Начать")
     btn_profile = types.KeyboardButton("👤 О себе")
+    btn_roles = types.KeyboardButton("🎭 Выбрать роль")
     btn_support = types.KeyboardButton("⚠️ Жалоба / Поддержка")
     markup.add(btn_start, btn_profile)
-    markup.add(btn_support)
+    markup.add(btn_roles, btn_support)
     return markup
 
 @app.post(f"/{TELEGRAM_TOKEN}")
 def process_webhook(update: dict):
     """Эндпоинт для обработки входящих обновлений от Telegram"""
     
+    # Обработка нажатий на инлайн-кнопки (выбор ролей)
+    if "callback_query" in update:
+        call = telebot.types.Update.de_json(update).callback_query
+        user_id = call.from_user.id
+        data = call.data
+        
+        if data.startswith("role_"):
+            role_key = data.replace("role_", "")
+            if role_key in ROLES:
+                user_roles[user_id] = role_key
+                reset_user_chat(user_id) # Пересоздаем чат с новой системной инструкцией
+                
+                role_names = {
+                    "default": "🤖 Обычный ассистент",
+                    "programmer": "💻 Строгий программист",
+                    "sarcastic": "😏 Саркастичный собеседник",
+                    "teacher": "🎓 Мудрый преподаватель"
+                }
+                
+                bot.answer_callback_query(call.id, f"Роль изменена!")
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    text=f"✅ Успешно установлена роль: **{role_names.get(role_key, 'Ассистент')}**.\n\nМожете продолжать общение!",
+                    parse_mode="Markdown"
+                )
+        return {"status": "ok"}
+
     # 1. Обработка текстовых сообщений
     if "message" in update and "text" in update["message"]:
         message = telebot.types.Update.de_json(update).message
@@ -53,7 +114,7 @@ def process_webhook(update: dict):
         if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/reply "):
             try:
                 parts = user_text.split(" ", 2)
-                target_user_id = parts[1]
+                target_user_id = int(parts[1])
                 reply_text = parts[2]
                 
                 bot.send_message(
@@ -70,11 +131,58 @@ def process_webhook(update: dict):
         # Команда /start или кнопка "Начать"
         if user_text and (user_text == "🚀 Начать" or user_text.startswith("/start")):
             user_states[user_id] = "normal"
+            reset_user_chat(user_id)
+            
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini.\n\n"
-                "💬 Задавай текстовые вопросы или **отправляй картинки/скриншоты** — я умею распознавать текст и анализировать изображения!"
+                "🎭 **Новая функция:** настраивай стиль общения кнопкой **«🎭 Выбрать роль»**!\n"
+                "🎨 Команда `/image [описание]` создает картинки, а еще я понимаю голос, фото и помню контекст."
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return {"status": "ok"}
+
+        # Кнопка или команда выбора роли
+        if user_text == "🎭 Выбрать роль" or user_text == "/role":
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("🤖 Обычный ассистент", callback_data="role_default"),
+                types.InlineKeyboardButton("💻 Строгий программист", callback_data="role_programmer"),
+                types.InlineKeyboardButton("😏 Саркастичный собеседник", callback_data="role_sarcastic"),
+                types.InlineKeyboardButton("🎓 Мудрый преподаватель", callback_data="role_teacher")
+            )
+            bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
+            return {"status": "ok"}
+
+        # Команда генерации изображений: /image [промпт]
+        if user_text and user_text.startswith("/image "):
+            prompt = user_text.replace("/image", "").strip()
+            if not prompt:
+                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image кот в космосе`", parse_mode="Markdown")
+                return {"status": "ok"}
+
+            try:
+                bot.send_chat_action(message.chat.id, 'upload_photo')
+                result = client.models.generate_images(
+                    model='imagen-3.0-generate-002',
+                    prompt=prompt,
+                    config=genai_types.GenerateImagesConfig(
+                        number_of_images=1,
+                        output_mime_type="image/jpeg",
+                        aspect_ratio="1:1"
+                    )
+                )
+
+                for generated_image in result.generated_images:
+                    image_bytes = generated_image.image.image_bytes
+                    bot.send_photo(
+                        message.chat.id, 
+                        photo=image_bytes, 
+                        caption=f"🎨 *Запрос:* {prompt}", 
+                        parse_mode="Markdown", 
+                        reply_markup=get_main_keyboard()
+                    )
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка при генерации изображения: {e}", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
         # Кнопка "О себе"
@@ -119,13 +227,11 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Генерация ответа через текст (Gemini)
+        # Генерация ответа через текстовый чат (с учетом роли и контекста)
         if user_text:
             try:
-                response = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=user_text,
-                )
+                chat = get_user_chat(user_id)
+                response = chat.send_message(user_text)
                 ai_response = response.text
                 bot.reply_to(message, ai_response, reply_markup=get_main_keyboard())
 
@@ -135,6 +241,7 @@ def process_webhook(update: dict):
     # 2. Обработка фотографий
     if "message" in update and "photo" in update["message"]:
         message = telebot.types.Update.de_json(update).message
+        user_id = message.from_user.id
         try:
             photo = message.photo[-1]
             file_info = bot.get_file(photo.file_id)
@@ -144,13 +251,11 @@ def process_webhook(update: dict):
             with open(temp_filename, "wb") as f:
                 f.write(downloaded_file)
 
-            user_prompt = message.caption or "Распознай и выпиши весь текст, который изображен на этой фотографии, и ответь на вопросы, если они там есть."
+            user_prompt = message.caption or "Опиши, что изображено на этой фотографии, в соответствии с твоей ролью."
 
             image_file = client.files.upload(file=temp_filename)
-            response = client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=[image_file, user_prompt]
-            )
+            chat = get_user_chat(user_id)
+            response = chat.send_message([image_file, user_prompt])
 
             bot.reply_to(message, response.text, reply_markup=get_main_keyboard())
 
@@ -159,6 +264,33 @@ def process_webhook(update: dict):
 
         except Exception as e:
             bot.reply_to(message, f"❌ Не удалось обработать изображение: {e}", reply_markup=get_main_keyboard())
+
+    # 3. Обработка голосовых сообщений
+    if "message" in update and "voice" in update["message"]:
+        message = telebot.types.Update.de_json(update).message
+        user_id = message.from_user.id
+        try:
+            voice_info = bot.get_file(message.voice.file_id)
+            downloaded_voice = bot.download_file(voice_info.file_path)
+
+            temp_audio = "temp_voice.ogg"
+            with open(temp_audio, "wb") as f:
+                f.write(downloaded_voice)
+
+            audio_file = client.files.upload(file=temp_audio)
+            chat = get_user_chat(user_id)
+            response = chat.send_message([
+                audio_file, 
+                "Распознай речь из этого голосового сообщения и ответь на него."
+            ])
+
+            bot.reply_to(message, f"🎙 *Ответ:*\n\n{response.text}", parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
+
+        except Exception as e:
+            bot.reply_to(message, f"❌ Не удалось обработать голосовое сообщение: {e}", reply_markup=get_main_keyboard())
 
     return {"status": "ok"}
 
