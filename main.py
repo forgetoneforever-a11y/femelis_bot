@@ -157,7 +157,7 @@ def process_webhook(update: dict):
             try:
                 if active_model == "gemini":
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=user_text,
                     )
                     ai_response = response.text
@@ -171,7 +171,7 @@ def process_webhook(update: dict):
                             "Content-Type": "application/json"
                         }
                         json_data = {
-                            "model": "llama-3.3-70b-versatile",
+                            "model": "llama-3.1-8b-instant",
                             "messages": [{"role": "user", "content": user_text}]
                         }
                         with httpx.Client() as httpx_client:
