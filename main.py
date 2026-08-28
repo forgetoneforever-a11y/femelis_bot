@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from dotenv import load_dotenv
 from fastapi import FastAPI
 import telebot
@@ -38,7 +39,6 @@ def get_user_chat(user_id):
         role_key = user_roles.get(user_id, "default")
         system_instruction = ROLES.get(role_key, ROLES["default"])
         
-        # Создаем чат с системной инструкцией (ролью)
         user_chats[user_id] = client.chats.create(
             model="gemini-3.6-flash",
             config=genai_types.GenerateContentConfig(
@@ -78,7 +78,7 @@ def process_webhook(update: dict):
             role_key = data.replace("role_", "")
             if role_key in ROLES:
                 user_roles[user_id] = role_key
-                reset_user_chat(user_id) # Пересоздаем чат с новой системной инструкцией
+                reset_user_chat(user_id)
                 
                 role_names = {
                     "default": "🤖 Обычный ассистент",
@@ -135,13 +135,13 @@ def process_webhook(update: dict):
             
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini.\n\n"
-                "🎭 **Новая функция:** настраивай стиль общения кнопкой **«🎭 Выбрать роль»**!\n"
-                "🎨 Команда `/image [описание]` создает картинки, а еще я понимаю голос, фото и помню контекст."
+                "🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**!\n"
+                "🎨 Команда `/image [описание]` создает картинки, а также я понимаю голос, фото и помню контекст."
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Кнопка или команда выбора роли
+        # Команда /role
         if user_text == "🎭 Выбрать роль" or user_text == "/role":
             markup = types.InlineKeyboardMarkup(row_width=1)
             markup.add(
@@ -153,34 +153,27 @@ def process_webhook(update: dict):
             bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
             return {"status": "ok"}
 
-        # Команда генерации изображений: /image [промпт]
+        # Генерация изображений через стабильный публичный API (Pollinations.ai)
         if user_text and user_text.startswith("/image "):
             prompt = user_text.replace("/image", "").strip()
             if not prompt:
-                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image кот в космосе`", parse_mode="Markdown")
+                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image anime girl`", parse_mode="Markdown")
                 return {"status": "ok"}
 
             try:
                 bot.send_chat_action(message.chat.id, 'upload_photo')
-                result = client.models.generate_images(
-                    model='imagen-3.0-generate-002',
-                    prompt=prompt,
-                    config=genai_types.GenerateImagesConfig(
-                        number_of_images=1,
-                        output_mime_type="image/jpeg",
-                        aspect_ratio="1:1"
-                    )
-                )
+                
+                # Формируем URL для генерации картинки
+                encoded_prompt = urllib.parse.quote(prompt)
+                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
 
-                for generated_image in result.generated_images:
-                    image_bytes = generated_image.image.image_bytes
-                    bot.send_photo(
-                        message.chat.id, 
-                        photo=image_bytes, 
-                        caption=f"🎨 *Запрос:* {prompt}", 
-                        parse_mode="Markdown", 
-                        reply_markup=get_main_keyboard()
-                    )
+                bot.send_photo(
+                    message.chat.id,
+                    photo=image_url,
+                    caption=f"🎨 *Запрос:* {prompt}",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при генерации изображения: {e}", reply_markup=get_main_keyboard())
             return {"status": "ok"}
