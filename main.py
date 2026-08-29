@@ -24,6 +24,7 @@ app = FastAPI()
 # Файлы для сохранения данных
 USERS_FILE = "users.json"
 LIMITS_FILE = "limits.json"
+SETTINGS_FILE = "settings.json"
 
 user_states = {}
 user_chats = {}
@@ -51,6 +52,16 @@ def save_data(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
+# Управление статусом технического перерыва
+def is_maintenance_mode():
+    settings = load_data(SETTINGS_FILE)
+    return settings.get("maintenance", False)
+
+def set_maintenance_mode(status: bool):
+    settings = load_data(SETTINGS_FILE)
+    settings["maintenance"] = status
+    save_data(SETTINGS_FILE, settings)
+
 # Загружаем структуру лимитов и дат: {user_id: {"balance": 5, "last_date": "2026-06-06"}}
 raw_limits = load_data(LIMITS_FILE)
 user_image_data = {}
@@ -58,7 +69,6 @@ for k, v in raw_limits.items():
     if isinstance(v, dict):
         user_image_data[int(k)] = v
     else:
-        # Миграция со старого формата, если там хранилось просто число
         user_image_data[int(k)] = {"balance": v, "last_date": str(date.today())}
 
 def save_all_limits():
@@ -67,14 +77,12 @@ def save_all_limits():
 def get_user_limit_info(user_id):
     today_str = str(date.today())
     if user_id not in user_image_data:
-        # Новичку даем 5 бесплатных генераций на сегодня
         user_image_data[user_id] = {"balance": 5, "last_date": today_str}
         save_all_limits()
     else:
-        # Проверяем, наступил ли новый день
         data = user_image_data[user_id]
         if data.get("last_date") != today_str:
-            data["balance"] = 5  # Сбрасываем до 5 бесплатных генераций в день
+            data["balance"] = 5
             data["last_date"] = today_str
             save_all_limits()
             
@@ -149,8 +157,13 @@ def process_webhook(update: dict):
     if update_obj.message and update_obj.message.successful_payment:
         message = update_obj.message
         user_id = message.from_user.id
-        payment = message.successful_payment
+        
+        # Админ может платить или тестировать, но проверим техработы
+        if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
+            bot.reply_to(message, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ")
+            return {"status": "ok"}
 
+        payment = message.successful_payment
         if payment.invoice_payload == "buy_5_images":
             info = get_user_limit_info(user_id)
             new_balance = info["balance"] + 5
@@ -172,8 +185,12 @@ def process_webhook(update: dict):
     if update_obj.callback_query:
         call = update_obj.callback_query
         user_id = call.from_user.id
-        data = call.data
+        
+        if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
+            bot.answer_callback_query(call.id, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ", show_alert=True)
+            return {"status": "ok"}
 
+        data = call.data
         if data.startswith("role_"):
             role_key = data.replace("role_", "")
             if role_key in ROLES:
@@ -189,199 +206,216 @@ def process_webhook(update: dict):
                 )
         return {"status": "ok"}
 
-    if update_obj.message and update_obj.message.text:
+    if update_obj.message and (update_obj.message.text or update_obj.message.photo or update_obj.message.voice):
         message = update_obj.message
-        user_text = message.text
         user_id = message.from_user.id
 
-        save_user(user_id)
+        # --- ПРОВЕРКА НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ ---
+        if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
+            bot.reply_to(message, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ")
+            return {"status": "ok"}
 
-        first_name = message.from_user.first_name or ""
-        last_name = message.from_user.last_name or ""
-        username = message.from_user.username
-        language_code = message.from_user.language_code or "не указан"
-
-        full_name = f"{first_name} {last_name}".strip()
-        user_tag = f"@{username}" if username else "нет юзернейма"
-
-        if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/reply "):
-            try:
-                parts = user_text.split(" ", 2)
-                target_user_id = int(parts[1])
-                reply_text = parts[2]
-
-                bot.send_message(
-                    target_user_id,
-                    f"💬 **Ответ от администратора:**\n\n{escape_markdown_v2(reply_text)}",
-                    parse_mode=PARSE_MODE
-                )
-                bot.reply_to(message, f"✅ Ответ успешно отправлен пользователю `{target_user_id}`!", parse_mode=PARSE_MODE)
+        # Администратор может управлять режимом техработ прямо из чата
+        if user_id == ADMIN_CHAT_ID and message.text:
+            if message.text == "/maintenance on":
+                set_maintenance_mode(True)
+                bot.reply_to(message, "🛠 Режим технических работ **включен**.")
                 return {"status": "ok"}
-            except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка отправки: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+            elif message.text == "/maintenance off":
+                set_maintenance_mode(False)
+                bot.reply_to(message, "🚀 Режим технических работ **выключен**, бот снова доступен всем.")
                 return {"status": "ok"}
 
-        if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/broadcast "):
-            broadcast_text = user_text.replace("/broadcast", "").strip()
-            if not broadcast_text:
-                bot.reply_to(message, "⚠️ Укажите текст для рассылки после команды `/broadcast`", parse_mode=PARSE_MODE)
-                return {"status": "ok"}
+        # Обработка текста
+        if message.text:
+            user_text = message.text
+            save_user(user_id)
 
-            users = set(load_users())
-            success_count = 0
-            fail_count = 0
+            first_name = message.from_user.first_name or ""
+            last_name = message.from_user.last_name or ""
+            username = message.from_user.username
+            language_code = message.from_user.language_code or "не указан"
 
-            for uid in users:
-                if int(uid) == int(ADMIN_CHAT_ID):
-                    continue
+            full_name = f"{first_name} {last_name}".strip()
+            user_tag = f"@{username}" if username else "нет юзернейма"
 
+            if user_id == ADMIN_CHAT_ID and user_text.startswith("/reply "):
                 try:
+                    parts = user_text.split(" ", 2)
+                    target_user_id = int(parts[1])
+                    reply_text = parts[2]
+
                     bot.send_message(
-                        int(uid), 
-                        f"📢 **Обновление от администратора:**\n\n{escape_markdown_v2(broadcast_text)}", 
+                        target_user_id,
+                        f"💬 **Ответ от администратора:**\n\n{escape_markdown_v2(reply_text)}",
                         parse_mode=PARSE_MODE
                     )
-                    success_count += 1
-                except Exception:
-                    fail_count += 1
+                    bot.reply_to(message, f"✅ Ответ успешно отправлен пользователю `{target_user_id}`!", parse_mode=PARSE_MODE)
+                    return {"status": "ok"}
+                except Exception as e:
+                    bot.reply_to(message, f"❌ Ошибка отправки: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                    return {"status": "ok"}
 
-            bot.reply_to(
-                message, 
-                f"✅ **Рассылка завершена\!**\n\nУспешно доставлено: `{success_count}`\nОшибок: `{fail_count}`", 
-                parse_mode=PARSE_MODE
-            )
-            return {"status": "ok"}
+            if user_id == ADMIN_CHAT_ID and user_text.startswith("/broadcast "):
+                broadcast_text = user_text.replace("/broadcast", "").strip()
+                if not broadcast_text:
+                    bot.reply_to(message, "⚠️ Укажите текст для рассылки после команды `/broadcast`", parse_mode=PARSE_MODE)
+                    return {"status": "ok"}
 
-        if user_text and (user_text == "🚀 Начать" or user_text.startswith("/start")):
-            user_states[user_id] = "normal"
-            reset_user_chat(user_id)
+                users = set(load_users())
+                success_count = 0
+                fail_count = 0
 
-            welcome_text = (
-                f"👋 **Привет\!** Я твой ИИ\-ассистент на базе Gemini\.\n\n"
-                f"🎁 Каждой день вам доступно **5 бесплатных генераций** картинок командой `/image`\.\n"
-                f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!\n"
-                f"🎨 Я также понимаю голос, фото и помню контекст\."
-            )
-            bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
-            return {"status": "ok"}
+                for uid in users:
+                    if int(uid) == int(ADMIN_CHAT_ID):
+                        continue
 
-        if user_text == "🎭 Выбрать роль" or user_text == "/role":
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            markup.add(
-                types.InlineKeyboardButton("🤖 Обычный ассистент", callback_data="role_default"),
-                types.InlineKeyboardButton("💻 Строгий программист", callback_data="role_programmer"),
-                types.InlineKeyboardButton("😏 Саркастичный собеседник", callback_data="role_sarcastic"),
-                types.InlineKeyboardButton("🎓 Мудрый преподаватель", callback_data="role_teacher")
-            )
-            bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
-            return {"status": "ok"}
+                    try:
+                        bot.send_message(
+                            int(uid), 
+                            f"📢 **Обновление от администратора:**\n\n{escape_markdown_v2(broadcast_text)}", 
+                            parse_mode=PARSE_MODE
+                        )
+                        success_count += 1
+                    except Exception:
+                        fail_count += 1
 
-        if user_text == "⭐ Купить генерации" or user_text == "/premium":
-            title = "⭐ Пакет: 5 дополнительных генераций"
-            description = "Дает право на 5 дополнительных запросов в генераторе изображений /image."
-            payload = "buy_5_images"
-            currency = "XTR"
-            prices = [types.LabeledPrice(label="5 генераций", amount=5)]
-            
-            try:
-                bot.send_invoice(
-                    chat_id=message.chat.id,
-                    title=title,
-                    description=description,
-                    invoice_payload=payload,
-                    provider_token="",
-                    currency=currency,
-                    prices=prices,
-                    start_parameter="buy-images"
-                )
-            except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка создания счета: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
-            return {"status": "ok"}
-
-        if user_text and user_text.startswith("/image "):
-            prompt = user_text.replace("/image", "").strip()
-            if not prompt:
-                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image cyberpunk cat`", parse_mode=PARSE_MODE)
-                return {"status": "ok"}
-
-            info = get_user_limit_info(user_id)
-            current_balance = info["balance"]
-
-            if current_balance <= 0:
                 bot.reply_to(
-                    message,
-                    "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку **«⭐ Купить генерации»**.",
-                    parse_mode=PARSE_MODE,
-                    reply_markup=get_main_keyboard()
+                    message, 
+                    f"✅ **Рассылка завершена\!**\n\nУспешно доставлено: `{success_count}`\nОшибок: `{fail_count}`", 
+                    parse_mode=PARSE_MODE
                 )
                 return {"status": "ok"}
 
-            try:
-                bot.send_chat_action(message.chat.id, 'upload_photo')
-                new_balance = current_balance - 1
-                update_user_balance(user_id, new_balance)
+            if user_text == "🚀 Начать" or user_text.startswith("/start"):
+                user_states[user_id] = "normal"
+                reset_user_chat(user_id)
 
-                encoded_prompt = urllib.parse.quote(prompt)
-                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-
-                caption_text = (
-                    f"🎨 **Запрос:** {escape_markdown_v2(prompt)}\n"
-                    f"🎁 **Остаток на сегодня:** `{new_balance}`"
+                welcome_text = (
+                    f"👋 **Привет\!** Я твой ИИ\-ассистент на базе Gemini\.\n\n"
+                    f"🎁 Каждой день вам доступно **5 бесплатных генераций** картинок командой `/image`\.\n"
+                    f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!\n"
+                    f"🎨 Я также понимаю голос, фото и помню контекст\."
                 )
-                bot.send_photo(
-                    message.chat.id,
-                    photo=image_url,
-                    caption=caption_text,
-                    parse_mode=PARSE_MODE,
-                    reply_markup=get_main_keyboard()
+                bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                return {"status": "ok"}
+
+            if user_text == "🎭 Выбрать роль" or user_text == "/role":
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                markup.add(
+                    types.InlineKeyboardButton("🤖 Обычный ассистент", callback_data="role_default"),
+                    types.InlineKeyboardButton("💻 Строгий программист", callback_data="role_programmer"),
+                    types.InlineKeyboardButton("😏 Саркастичный собеседник", callback_data="role_sarcastic"),
+                    types.InlineKeyboardButton("🎓 Мудрый преподаватель", callback_data="role_teacher")
                 )
-            except Exception as e:
-                update_user_balance(user_id, current_balance)
-                bot.reply_to(message, f"❌ Ошибка при генерации изображения: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
-            return {"status": "ok"}
+                bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
+                return {"status": "ok"}
 
-        if user_text == "👤 О себе":
-            info = get_user_limit_info(user_id)
-            balance = info["balance"]
-            profile_text = (
-                f"👤 **Информация о вашем аккаунте:**\n\n"
-                f"🆔 **ID:** `{user_id}`\n"
-                f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
-                f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
-                f"🌐 **Язык Telegram:** `{language_code}`\n"
-                f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n\n"
-                f"*Примечание: бесплатные генерации обновляются ежедневно\.*"
-            )
-            bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
-            return {"status": "ok"}
+            if user_text == "⭐ Купить генерации" or user_text == "/premium":
+                title = "⭐ Пакет: 5 дополнительных генераций"
+                description = "Дает право на 5 дополнительных запросов в генераторе изображений /image."
+                payload = "buy_5_images"
+                currency = "XTR"
+                prices = [types.LabeledPrice(label="5 генераций", amount=5)]
+                
+                try:
+                    bot.send_invoice(
+                        chat_id=message.chat.id,
+                        title=title,
+                        description=description,
+                        invoice_payload=payload,
+                        provider_token="",
+                        currency=currency,
+                        prices=prices,
+                        start_parameter="buy-images"
+                    )
+                except Exception as e:
+                    bot.reply_to(message, f"❌ Ошибка создания счета: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                return {"status": "ok"}
 
-        if user_text == "⚠️ Жалоба / Поддержка":
-            user_states[user_id] = "waiting_for_ticket"
-            support_text = (
-                "💬 Служба поддержки\n\n"
-                "Опишите вашу проблему или оставьте жалобу одним сообщением, и я передам её администратору."
-            )
-            bot.reply_to(message, support_text, parse_mode=None, reply_markup=types.ReplyKeyboardRemove())
-            return {"status": "ok"}
+            if user_text.startswith("/image "):
+                prompt = user_text.replace("/image", "").strip()
+                if not prompt:
+                    bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image cyberpunk cat`", parse_mode=PARSE_MODE)
+                    return {"status": "ok"}
 
-        if user_states.get(user_id) == "waiting_for_ticket" and user_text:
-            user_states[user_id] = "normal"
-            admin_message = (
-                f"🚨 Новое обращение в поддержку!\n\n"
-                f"👤 Имя: {full_name}\n"
-                f"🔗 Юзернейм: {user_tag}\n"
-                f"🆔 ID: {user_id}\n"
-                f"💬 Текст: {user_text}\n\n"
-                f"Ответить командой:\n/reply {user_id} Текст ответа"
-            )
-            try:
-                bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode=None)
-                bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard())
-            except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка при отправке: {e}", parse_mode=None)
-            return {"status": "ok"}
+                info = get_user_limit_info(user_id)
+                current_balance = info["balance"]
 
-        if user_text:
+                if current_balance <= 0:
+                    bot.reply_to(
+                        message,
+                        "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку **«⭐ Купить генерации»**.",
+                        parse_mode=PARSE_MODE,
+                        reply_markup=get_main_keyboard()
+                    )
+                    return {"status": "ok"}
+
+                try:
+                    bot.send_chat_action(message.chat.id, 'upload_photo')
+                    new_balance = current_balance - 1
+                    update_user_balance(user_id, new_balance)
+
+                    encoded_prompt = urllib.parse.quote(prompt)
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+
+                    caption_text = (
+                        f"🎨 **Запрос:** {escape_markdown_v2(prompt)}\n"
+                        f"🎁 **Остаток на сегодня:** `{new_balance}`"
+                    )
+                    bot.send_photo(
+                        message.chat.id,
+                        photo=image_url,
+                        caption=caption_text,
+                        parse_mode=PARSE_MODE,
+                        reply_markup=get_main_keyboard()
+                    )
+                except Exception as e:
+                    update_user_balance(user_id, current_balance)
+                    bot.reply_to(message, f"❌ Ошибка при генерации изображения: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                return {"status": "ok"}
+
+            if user_text == "👤 О себе":
+                info = get_user_limit_info(user_id)
+                balance = info["balance"]
+                profile_text = (
+                    f"👤 **Информация о вашем аккаунте:**\n\n"
+                    f"🆔 **ID:** `{user_id}`\n"
+                    f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
+                    f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
+                    f"🌐 **Язык Telegram:** `{language_code}`\n"
+                    f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n\n"
+                    f"*Примечание: бесплатные генерации обновляются ежедневно\.*"
+                )
+                bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                return {"status": "ok"}
+
+            if user_text == "⚠️ Жалоба / Поддержка":
+                user_states[user_id] = "waiting_for_ticket"
+                support_text = (
+                    "💬 Служба поддержки\n\n"
+                    "Опишите вашу проблему или оставьте жалобу одним сообщением, и я передам её администратору."
+                )
+                bot.reply_to(message, support_text, parse_mode=None, reply_markup=types.ReplyKeyboardRemove())
+                return {"status": "ok"}
+
+            if user_states.get(user_id) == "waiting_for_ticket" and user_text:
+                user_states[user_id] = "normal"
+                admin_message = (
+                    f"🚨 Новое обращение в поддержку!\n\n"
+                    f"👤 Имя: {full_name}\n"
+                    f"🔗 Юзернейм: {user_tag}\n"
+                    f"🆔 ID: {user_id}\n"
+                    f"💬 Текст: {user_text}\n\n"
+                    f"Ответить командой:\n/reply {user_id} Текст ответа"
+                )
+                try:
+                    bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode=None)
+                    bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard())
+                except Exception as e:
+                    bot.reply_to(message, f"❌ Ошибка при отправке: {e}", parse_mode=None)
+                return {"status": "ok"}
+
             try:
                 chat = get_user_chat(user_id)
                 response = chat.send_message(user_text)
@@ -390,58 +424,56 @@ def process_webhook(update: dict):
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
 
-    if update_obj.message and update_obj.message.photo:
-        message = update_obj.message
-        user_id = message.from_user.id
-        save_user(user_id)
-        try:
-            photo = message.photo[-1]
-            file_info = bot.get_file(photo.file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            temp_filename = "temp_image.jpg"
-            with open(temp_filename, "wb") as f:
-                f.write(downloaded_file)
+        # Обработка фото
+        elif message.photo:
+            save_user(user_id)
+            try:
+                photo = message.photo[-1]
+                file_info = bot.get_file(photo.file_id)
+                downloaded_file = bot.download_file(file_info.file_path)
+                temp_filename = "temp_image.jpg"
+                with open(temp_filename, "wb") as f:
+                    f.write(downloaded_file)
 
-            user_prompt = message.caption or "Опиши, что изображено на этой фотографии, в соответствии с твоей ролью."
-            safe_user_prompt = escape_markdown_v2(user_prompt)
+                user_prompt = message.caption or "Опиши, что изображено на этой фотографии, в соответствии с твоей ролью."
+                safe_user_prompt = escape_markdown_v2(user_prompt)
 
-            image_file = client.files.upload(file=temp_filename)
-            chat = get_user_chat(user_id)
-            response = chat.send_message([image_file, safe_user_prompt])
-            
-            safe_response_text = escape_markdown_v2(response.text)
-            bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                image_file = client.files.upload(file=temp_filename)
+                chat = get_user_chat(user_id)
+                response = chat.send_message([image_file, safe_user_prompt])
+                
+                safe_response_text = escape_markdown_v2(response.text)
+                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
 
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
-        except Exception as e:
-            bot.reply_to(message, f"❌ Не удалось обработать изображение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except Exception as e:
+                bot.reply_to(message, f"❌ Не удалось обработать изображение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
 
-    if update_obj.message and update_obj.message.voice:
-        message = update_obj.message
-        user_id = message.from_user.id
-        save_user(user_id)
-        try:
-            voice_info = bot.get_file(message.voice.file_id)
-            downloaded_voice = bot.download_file(voice_info.file_path)
-            temp_audio = "temp_voice.ogg"
-            with open(temp_audio, "wb") as f:
-                f.write(downloaded_voice)
+        # Обработка голоса
+        elif message.voice:
+            save_user(user_id)
+            try:
+                voice_info = bot.get_file(message.voice.file_id)
+                downloaded_voice = bot.download_file(voice_info.file_path)
+                temp_audio = "temp_voice.ogg"
+                with open(temp_audio, "wb") as f:
+                    f.write(downloaded_voice)
 
-            audio_file = client.files.upload(file=temp_audio)
-            chat = get_user_chat(user_id)
-            response = chat.send_message([
-                audio_file, 
-                "Распознай речь из этого голосового сообщения и ответь на него."
-            ])
+                audio_file = client.files.upload(file=temp_audio)
+                chat = get_user_chat(user_id)
+                response = chat.send_message([
+                    audio_file, 
+                    "Распознай речь из этого голосового сообщения и ответь на него."
+                ])
 
-            safe_response_text = escape_markdown_v2(response.text)
-            bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                safe_response_text = escape_markdown_v2(response.text)
+                bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
 
-            if os.path.exists(temp_audio):
-                os.remove(temp_audio)
-        except Exception as e:
-            bot.reply_to(message, f"❌ Не удалось обработать голосовое сообщение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+            except Exception as e:
+                bot.reply_to(message, f"❌ Не удалось обработать голосовое сообщение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
 
     return {"status": "ok"}
 
