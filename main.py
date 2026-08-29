@@ -104,6 +104,12 @@ def escape_markdown_v2(text):
     regex = re.compile(f'([{re.escape(escape_chars)}])')
     return regex.sub(r'\\\1', text)
 
+@app.on_event("startup")
+def setup_webhook():
+    webhook_url = f"https://femelis-bot.onrender.com/{TELEGRAM_TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+
 @app.post(f"/{TELEGRAM_TOKEN}")
 def process_webhook(update: dict):
     update_obj = telebot.types.Update.de_json(update)
@@ -146,18 +152,11 @@ def process_webhook(update: dict):
                 user_roles[user_id] = role_key
                 reset_user_chat(user_id)
 
-                role_names = {
-                    "default": "🤖 Обычный ассистент",
-                    "programmer": "💻 Строгий программист",
-                    "sarcastic": "😏 Саркастичный собеседник",
-                    "teacher": "🎓 Мудрый преподаватель"
-                }
-
                 bot.answer_callback_query(call.id, f"Роль изменена!")
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
                     message_id=call.message.id,
-                    text=f"✅ Успешно установлена роль: **{role_names.get(role_key, 'Ассистент')}**\.\n\nМожете продолжать общение\!",
+                    text=f"✅ Успешно установлена роль: **{role_key}**\.\n\nМожете продолжать общение\!",
                     parse_mode=PARSE_MODE
                 )
         return {"status": "ok"}
@@ -200,17 +199,17 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "⚠️ Укажите текст для рассылки после команды `/broadcast`", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
 
-            users = load_users()
+            users = set(load_users())
             success_count = 0
             fail_count = 0
 
             for uid in users:
-                if uid == ADMIN_CHAT_ID:
+                if int(uid) == int(ADMIN_CHAT_ID):
                     continue
 
                 try:
                     bot.send_message(
-                        uid, 
+                        int(uid), 
                         f"📢 **Обновление от администратора:**\n\n{escape_markdown_v2(broadcast_text)}", 
                         parse_mode=PARSE_MODE
                     )
@@ -220,7 +219,7 @@ def process_webhook(update: dict):
 
             bot.reply_to(
                 message, 
-                f"✅ **Рассылка завершена\!**\n\nУспешно доставлено: `{success_count}`\nОшибок (заблокировали): `{fail_count}`", 
+                f"✅ **Рассылка завершена\!**\n\nУспешно доставлено: `{success_count}`\nОшибок: `{fail_count}`", 
                 parse_mode=PARSE_MODE
             )
             return {"status": "ok"}
