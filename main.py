@@ -20,10 +20,11 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = FastAPI()
 
-# Хранилище состояний, активных сессий чата и выбранных ролей для каждого пользователя
+# Хранилище состояний, активных сессий чата, ролей и баланса дополнительных запросов /image
 user_states = {}
 user_chats = {}
 user_roles = {}
+user_image_limits = {} # Хранит количество доступных платных генераций для каждого пользователя
 
 # Предустановленные роли (системные инструкции)
 ROLES = {
@@ -59,18 +60,45 @@ def get_main_keyboard():
     btn_start = types.KeyboardButton("🚀 Начать")
     btn_profile = types.KeyboardButton("👤 О себе")
     btn_roles = types.KeyboardButton("🎭 Выбрать роль")
+    btn_premium = types.KeyboardButton("⭐ Premium (5 генераций)")
     btn_support = types.KeyboardButton("⚠️ Жалоба / Поддержка")
     markup.add(btn_start, btn_profile)
-    markup.add(btn_roles, btn_support)
+    markup.add(btn_roles, btn_premium)
+    markup.add(btn_support)
     return markup
 
 @app.post(f"/{TELEGRAM_TOKEN}")
 def process_webhook(update: dict):
     """Эндпоинт для обработки входящих обновлений от Telegram"""
     
+    update_obj = telebot.types.Update.de_json(update)
+
+    # Обработка успешного платежа звёздами
+    if update_obj.pre_checkout_query:
+        bot.answer_pre_checkout_query(update_obj.pre_checkout_query.id, ok=True)
+        return {"status": "ok"}
+
+    if update_obj.message and update_obj.message.successful_payment:
+        message = update_obj.message
+        user_id = message.from_user.id
+        payment = message.successful_payment
+        
+        if payment.invoice_payload == "buy_5_images":
+            # Начисляем 5 дополнительных генераций
+            current_balance = user_image_limits.get(user_id, 0)
+            user_image_limits[user_id] = current_balance + 5
+            
+            bot.reply_to(
+                message, 
+                f"🎉 **Оплата прошла успешно!**\n\nВам зачислено **5 дополнительных генераций** изображений.\nБаланс платных генераций: `{user_image_limits[user_id]}`", 
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+        return {"status": "ok"}
+
     # Обработка нажатий на инлайн-кнопки (выбор ролей)
-    if "callback_query" in update:
-        call = telebot.types.Update.de_json(update).callback_query
+    if update_obj.callback_query:
+        call = update_obj.callback_query
         user_id = call.from_user.id
         data = call.data
         
@@ -97,8 +125,8 @@ def process_webhook(update: dict):
         return {"status": "ok"}
 
     # 1. Обработка текстовых сообщений
-    if "message" in update and "text" in update["message"]:
-        message = telebot.types.Update.de_json(update).message
+    if update_obj.message and update_obj.message.text:
+        message = update_obj.message
         user_text = message.text
         user_id = message.from_user.id
         
@@ -136,12 +164,12 @@ def process_webhook(update: dict):
             welcome_text = (
                 "👋 **Привет!** Я твой ИИ-ассистент на базе Gemini.\n\n"
                 "🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**!\n"
-                "🎨 Команда `/image [описание]` создает картинки, а также я понимаю голос, фото и помню контекст."
+                "⭐ Кнопка **«⭐ Premium»** позволяет купить дополнительные генерации картинок за звёзды."
             )
             bot.reply_to(message, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
-        # Команда /role
+        # Кнопка /role
         if user_text == "🎭 Выбрать роль" or user_text == "/role":
             markup = types.InlineKeyboardMarkup(row_width=1)
             markup.add(
@@ -153,39 +181,82 @@ def process_webhook(update: dict):
             bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
             return {"status": "ok"}
 
-        # Генерация изображений через стабильный публичный API (Pollinations.ai)
+        # Кнопка покупки Premium за Telegram Stars
+        if user_text == "⭐ Premium (5 генераций)" or user_text == "/premium":
+            title = "⭐ Пакет Premium: 5 генераций картинок"
+            description = "Дает право на 5 дополнительных запросов в генераторе изображений /image."
+            payload = "buy_5_images"
+            currency = "XTR" # Валюта Telegram Stars
+            prices = [types.LabeledPrice(label="5 генераций", amount=5)] # Стоимость: 5 Telegram Stars
+            
+            try:
+                bot.send_invoice(
+                    chat_id=message.chat.id,
+                    title=title,
+                    description=description,
+                    invoice_payload=payload,
+                    provider_token="", # Для цифровых товаров (Stars) токен провайдера оставляем пустым ("")
+                    currency=currency,
+                    prices=prices,
+                    start_parameter="buy-images"
+                )
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка создания счета: {e}", reply_markup=get_main_keyboard())
+            return {"status": "ok"}
+
+        # Генерация изображений с проверкой баланса
         if user_text and user_text.startswith("/image "):
             prompt = user_text.replace("/image", "").strip()
             if not prompt:
-                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image anime girl`", parse_mode="Markdown")
+                bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image cyberpunk cat`", parse_mode="Markdown")
+                return {"status": "ok"}
+
+            # Проверяем баланс платных запросов (например, дадим 2 бесплатных, а дальше требуем звезды)
+            current_balance = user_image_limits.get(user_id, 0)
+            
+            # Для примера: если у пользователя меньше 1 генерации, списываем или просим купить
+            # Здесь можно настроить логику: бесплатные лимиты или строгая покупка
+            if current_balance <= 0:
+                bot.reply_to(
+                    message, 
+                    "⚠️ У вас закончились дополнительные генерации картинок!\n\nНажмите кнопку **«⭐ Premium (5 генераций)»**, чтобы приобрести пакет за Telegram Stars.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
                 return {"status": "ok"}
 
             try:
                 bot.send_chat_action(message.chat.id, 'upload_photo')
                 
-                # Формируем URL для генерации картинки
+                # Уменьшаем баланс на 1 генерацию
+                user_image_limits[user_id] = current_balance - 1
+                
                 encoded_prompt = urllib.parse.quote(prompt)
                 image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
 
                 bot.send_photo(
                     message.chat.id,
                     photo=image_url,
-                    caption=f"🎨 *Запрос:* {prompt}",
+                    caption=f"🎨 *Запрос:* {prompt}\n⭐ *Остаток генераций:* `{user_image_limits[user_id]}`",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard()
                 )
             except Exception as e:
+                # Возвращаем попытку при ошибке
+                user_image_limits[user_id] += 1
                 bot.reply_to(message, f"❌ Ошибка при генерации изображения: {e}", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
         # Кнопка "О себе"
         if user_text == "👤 О себе":
+            balance = user_image_limits.get(user_id, 0)
             profile_text = (
                 f"👤 **Информация о вашем аккаунте:**\n\n"
                 f"🆔 **ID:** `{user_id}`\n"
                 f"📌 **Имя:** {full_name}\n"
                 f"🔗 **Username:** {user_tag}\n"
-                f"🌐 **Язык Telegram:** `{language_code}`\n\n"
+                f"🌐 **Язык Telegram:** `{language_code}`\n"
+                f"🎨 **Баланс генераций /image:** `{balance}`\n\n"
                 f"*Примечание: точная страна и номер телефона скрыты настройками безопасности Telegram.*"
             )
             bot.reply_to(message, profile_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
@@ -232,8 +303,8 @@ def process_webhook(update: dict):
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", reply_markup=get_main_keyboard())
 
     # 2. Обработка фотографий
-    if "message" in update and "photo" in update["message"]:
-        message = telebot.types.Update.de_json(update).message
+    if update_obj.message and update_obj.message.photo:
+        message = update_obj.message
         user_id = message.from_user.id
         try:
             photo = message.photo[-1]
@@ -259,8 +330,8 @@ def process_webhook(update: dict):
             bot.reply_to(message, f"❌ Не удалось обработать изображение: {e}", reply_markup=get_main_keyboard())
 
     # 3. Обработка голосовых сообщений
-    if "message" in update and "voice" in update["message"]:
-        message = telebot.types.Update.de_json(update).message
+    if update_obj.message and update_obj.message.voice:
+        message = update_obj.message
         user_id = message.from_user.id
         try:
             voice_info = bot.get_file(message.voice.file_id)
