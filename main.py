@@ -26,6 +26,8 @@ USERS_FILE = "users.json"
 LIMITS_FILE = "limits.json"
 SETTINGS_FILE = "settings.json"
 BLOCKED_FILE = "blocked.json"
+REFERRALS_FILE = "referrals.json"
+STATS_FILE = "stats.json"
 
 user_states = {}
 user_chats = {}
@@ -78,6 +80,27 @@ def set_user_blocked(user_id, blocked: bool):
     else:
         blocked_set.discard(user_id)
     save_data(BLOCKED_FILE, list(blocked_set))
+
+def load_referrals():
+    return load_data(REFERRALS_FILE)
+
+def save_referral_link(new_user_id, referrer_id):
+    refs = load_referrals()
+    str_new_id = str(new_user_id)
+    if str_new_id not in refs:
+        refs[str_new_id] = referrer_id
+        save_data(REFERRALS_FILE, refs)
+        return True
+    return False
+
+def get_total_images_counter():
+    data = load_data(STATS_FILE)
+    return data.get("total_images_generated", 0)
+
+def increment_images_counter():
+    data = load_data(STATS_FILE)
+    data["total_images_generated"] = data.get("total_images_generated", 0) + 1
+    save_data(STATS_FILE, data)
 
 raw_limits = load_data(LIMITS_FILE)
 user_image_data = {}
@@ -160,8 +183,9 @@ def get_admin_panel_keyboard():
     btn2 = types.KeyboardButton("2. Заблокировать / Разблокировать пользователя")
     btn3 = types.KeyboardButton("3. Дать 5 попыток на /image генерацию")
     btn4 = types.KeyboardButton("4. Список пользователей и управление")
+    btn5 = types.KeyboardButton("📊 Статистика бота")
     btn_exit = types.KeyboardButton("🚪 Выйти из админ-панели")
-    markup.add(btn1, btn2, btn3, btn4, btn_exit)
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn_exit)
     return markup
 
 def generate_users_page_keyboard(page: int, total_pages: int, users_list):
@@ -252,7 +276,6 @@ def process_webhook(update: dict):
 
         data = call.data
 
-        # Обработка инлайн-кнопок админа для управления списком пользователей
         if user_id == ADMIN_CHAT_ID:
             users_list = list(load_users())
             total_pages = (len(users_list) + 4) // 5 if users_list else 1
@@ -420,7 +443,7 @@ def process_webhook(update: dict):
             elif state == "waiting_for_password":
                 if message.text == "hatemylife":
                     user_states[user_id] = "admin_logged_in"
-                    bot.reply_to(message, "✅ **Успешный вход в панель управления пользователями\!**\n\nВыберите действие ниже:", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
+                    bot.reply_to(message, "✅ **Успешный вход в панель управления\!**\n\nВыберите действие ниже:", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                 else:
                     user_states[user_id] = "normal"
                     bot.reply_to(message, "❌ Неверный пароль. Авторизация отменена.", reply_markup=get_main_keyboard(True))
@@ -457,6 +480,30 @@ def process_webhook(update: dict):
                         parse_mode=PARSE_MODE,
                         reply_markup=markup
                     )
+                    return {"status": "ok"}
+
+                elif message.text == "📊 Статистика бота":
+                    users_list = load_users()
+                    total_users = len(users_list)
+                    
+                    today_str = str(date.today())
+                    active_today = sum(
+                        1 for uid, info in user_image_data.items() 
+                        if isinstance(info, dict) and info.get("last_date") == today_str
+                    )
+                    
+                    total_spent = get_total_images_counter()
+                    blocked_count = len(load_blocked())
+
+                    stats_text = (
+                        f"📊 **Статистика бота Femelis AI**\n\n"
+                        f"👥 **Всего пользователей в базе:** `{total_users}`\n"
+                        f"🟢 **Активных за сегодня:** `{active_today}`\n"
+                        f"🚫 **Заблокированных:** `{blocked_count}`\n"
+                        f"🎨 **Суммарно потрачено генераций:** `{total_spent}`\n\n"
+                        f"📅 *Дата отчета:* `{today_str}`"
+                    )
+                    bot.reply_to(message, stats_text, parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                     return {"status": "ok"}
 
             elif state == "admin_send_msg_id":
@@ -523,11 +570,34 @@ def process_webhook(update: dict):
                 user_states[user_id] = "normal"
                 reset_user_chat(user_id)
 
+                if user_text.startswith("/start ref_"):
+                    try:
+                        referrer_id = int(user_text.split("ref_")[1])
+                        if referrer_id != user_id:
+                            is_new = save_referral_link(user_id, referrer_id)
+                            if is_new:
+                                info_new = get_user_limit_info(user_id)
+                                update_user_balance(user_id, info_new["balance"] + 3)
+
+                                info_ref = get_user_limit_info(referrer_id)
+                                update_user_balance(referrer_id, info_ref["balance"] + 3)
+
+                                try:
+                                    bot.send_message(
+                                        referrer_id,
+                                        "🎉 По вашей ссылке зарегистрировался новый друг!\n🎁 Вам начислено **+3 бонусных генерации** изображений.",
+                                        parse_mode=PARSE_MODE
+                                    )
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
                 welcome_text = (
                     f"👋 **Привет\!** Я твой ИИ\-ассистент на базе Gemini\.\n\n"
                     f"🎁 Каждой день вам доступно **5 бесплатных генераций** картинок командой `/image`\.\n"
-                    f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!\n"
-                    f"🎨 Я также понимаю голос, фото и помню контекст\."
+                    f"👥 Приглашайте друзей по реферальной ссылке и получайте **+3 генерации** за каждого!\n"
+                    f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!"
                 )
                 bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
@@ -587,6 +657,7 @@ def process_webhook(update: dict):
                     bot.send_chat_action(message.chat.id, 'upload_photo')
                     new_balance = current_balance - 1
                     update_user_balance(user_id, new_balance)
+                    increment_images_counter()
 
                     encoded_prompt = urllib.parse.quote(prompt)
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
@@ -610,14 +681,22 @@ def process_webhook(update: dict):
             if user_text == "👤 О себе":
                 info = get_user_limit_info(user_id)
                 balance = info["balance"]
+                
+                refs = load_referrals()
+                invited_count = sum(1 for ref_id in refs.values() if ref_id == user_id)
+                
+                bot_username = bot.get_me().username
+                ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
                 profile_text = (
                     f"👤 **Информация о вашем аккаунте:**\n\n"
                     f"🆔 **ID:** `{user_id}`\n"
                     f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
                     f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
-                    f"🌐 **Язык Telegram:** `{language_code}`\n"
-                    f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n\n"
-                    f"*Примечание: бесплатные генерации обновляются ежедневно\.*"
+                    f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n"
+                    f"👥 **Приглашено друзей:** `{invited_count}`\n\n"
+                    f"🔗 **Ваша реферальная ссылка:**\n`{ref_link}`\n\n"
+                    f"_Отправьте её другу — и вы оба получите по 3 бонусные генерации\!_"
                 )
                 bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
