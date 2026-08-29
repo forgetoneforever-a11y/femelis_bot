@@ -167,7 +167,6 @@ def process_webhook(update: dict):
         user_text = message.text
         user_id = message.from_user.id
 
-        # Сохраняем пользователя в базу для рассылок
         save_user(user_id)
 
         first_name = escape_markdown_v2(message.from_user.first_name or "")
@@ -178,7 +177,6 @@ def process_webhook(update: dict):
         full_name = f"{first_name} {last_name}".strip()
         user_tag = f"@{username}" if username else "нет юзернейма"
 
-        # Ответ администратора на жалобу через /reply
         if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/reply "):
             try:
                 parts = user_text.split(" ", 2)
@@ -196,7 +194,6 @@ def process_webhook(update: dict):
                 bot.reply_to(message, f"❌ Ошибка отправки: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
 
-        # Команда массовой рассылки для администратора (/broadcast Текст)
         if user_id == ADMIN_CHAT_ID and user_text and user_text.startswith("/broadcast "):
             broadcast_text = user_text.replace("/broadcast", "").strip()
             if not broadcast_text:
@@ -208,6 +205,9 @@ def process_webhook(update: dict):
             fail_count = 0
 
             for uid in users:
+                if uid == ADMIN_CHAT_ID:
+                    continue
+
                 try:
                     bot.send_message(
                         uid, 
@@ -406,7 +406,7 @@ def process_webhook(update: dict):
             ])
 
             safe_response_text = escape_markdown_v2(response.text)
-            bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyword())
+            bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
 
             if os.path.exists(temp_audio):
                 os.remove(temp_audio)
