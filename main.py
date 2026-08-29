@@ -168,8 +168,8 @@ def process_webhook(update: dict):
 
         save_user(user_id)
 
-        first_name = escape_markdown_v2(message.from_user.first_name or "")
-        last_name = escape_markdown_v2(message.from_user.last_name or "")
+        first_name = message.from_user.first_name or ""
+        last_name = message.from_user.last_name or ""
         username = message.from_user.username
         language_code = message.from_user.language_code or "не указан"
 
@@ -315,7 +315,7 @@ def process_webhook(update: dict):
             profile_text = (
                 f"👤 **Информация о вашем аккаунте:**\n\n"
                 f"🆔 **ID:** `{user_id}`\n"
-                f"📌 **Имя:** {full_name}\n"
+                f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
                 f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
                 f"🌐 **Язык Telegram:** `{language_code}`\n"
                 f"🎨 **Баланс генераций /image:** `{balance}`\n\n"
@@ -336,18 +336,18 @@ def process_webhook(update: dict):
         if user_states.get(user_id) == "waiting_for_ticket" and user_text:
             user_states[user_id] = "normal"
             admin_message = (
-                f"🚨 **Новое обращение в поддержку!**\n\n"
-                f"👤 **Имя:** {full_name}\n"
-                f"🔗 **Юзернейм:** {escape_markdown_v2(user_tag)}\n"
-                f"🆔 **ID:** `{user_id}`\n"
-                f"💬 **Текст:** {escape_markdown_v2(user_text)}\n\n"
-                f"`/reply {user_id} Текст ответа`"
+                f"🚨 Новое обращение в поддержку!\n\n"
+                f"👤 Имя: {full_name}\n"
+                f"🔗 Юзернейм: {user_tag}\n"
+                f"🆔 ID: {user_id}\n"
+                f"💬 Текст: {user_text}\n\n"
+                f"Ответить командой:\n/reply {user_id} Текст ответа"
             )
             try:
-                bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode=PARSE_MODE)
+                bot.send_message(ADMIN_CHAT_ID, admin_message)
                 bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard())
-            except Exception:
-                bot.reply_to(message, "❌ Ошибка при отправке сообщения.", reply_markup=get_main_keyboard())
+            except Exception as e:
+                bot.reply_to(message, f"❌ Ошибка при отправке: {e}", reply_markup=get_main_keyboard())
             return {"status": "ok"}
 
         if user_text:
