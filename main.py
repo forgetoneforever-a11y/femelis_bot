@@ -53,7 +53,6 @@ def save_data(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-# Управление техническим перерывом
 def is_maintenance_mode():
     settings = load_data(SETTINGS_FILE)
     return settings.get("maintenance", False)
@@ -63,7 +62,6 @@ def set_maintenance_mode(status: bool):
     settings["maintenance"] = status
     save_data(SETTINGS_FILE, settings)
 
-# Черный список заблокированных пользователей
 def load_blocked():
     data = load_data(BLOCKED_FILE)
     if isinstance(data, list):
@@ -81,7 +79,6 @@ def set_user_blocked(user_id, blocked: bool):
         blocked_set.discard(user_id)
     save_data(BLOCKED_FILE, list(blocked_set))
 
-# Лимиты генераций
 raw_limits = load_data(LIMITS_FILE)
 user_image_data = {}
 for k, v in raw_limits.items():
@@ -162,8 +159,33 @@ def get_admin_panel_keyboard():
     btn1 = types.KeyboardButton("1. Отправить личное сообщение пользователю")
     btn2 = types.KeyboardButton("2. Заблокировать / Разблокировать пользователя")
     btn3 = types.KeyboardButton("3. Дать 5 попыток на /image генерацию")
+    btn4 = types.KeyboardButton("4. Список пользователей и управление")
     btn_exit = types.KeyboardButton("🚪 Выйти из админ-панели")
-    markup.add(btn1, btn2, btn3, btn_exit)
+    markup.add(btn1, btn2, btn3, btn4, btn_exit)
+    return markup
+
+def generate_users_page_keyboard(page: int, total_pages: int, users_list):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    start_idx = page * 5
+    end_idx = start_idx + 5
+    current_slice = users_list[start_idx:end_idx]
+
+    for uid in current_slice:
+        blocked_status = "🚫 Заблокирован" if is_user_blocked(int(uid)) else "🟢 Активен"
+        info = get_user_limit_info(int(uid))
+        btn_text = f"ID: {uid} | Баланс: {info['balance']} | {blocked_status}"
+        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"adm_user_{uid}"))
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"adm_page_{page - 1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(types.InlineKeyboardButton("Вперед ➡️", callback_data=f"adm_page_{page + 1}"))
+    
+    if nav_buttons:
+        markup.row(*nav_buttons)
+        
     return markup
 
 def escape_markdown_v2(text):
@@ -229,6 +251,117 @@ def process_webhook(update: dict):
             return {"status": "ok"}
 
         data = call.data
+
+        # Обработка инлайн-кнопок админа для управления списком пользователей
+        if user_id == ADMIN_CHAT_ID:
+            users_list = list(load_users())
+            total_pages = (len(users_list) + 4) // 5 if users_list else 1
+
+            if data.startswith("adm_page_"):
+                page = int(data.replace("adm_page_", ""))
+                markup = generate_users_page_keyboard(page, total_pages, users_list)
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    text=f"📋 **Список пользователей бота**\nВсего запустили: `{len(users_list)}`\nСтраница `{page + 1}` из `{total_pages}`\n\nНажмите на пользователя для управления:",
+                    parse_mode=PARSE_MODE,
+                    reply_markup=markup
+                )
+                bot.answer_callback_query(call.id)
+                return {"status": "ok"}
+
+            elif data.startswith("adm_user_"):
+                target_uid = int(data.replace("adm_user_", ""))
+                blocked = is_user_blocked(target_uid)
+                info = get_user_limit_info(target_uid)
+                
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                block_btn_text = "🟢 Разблокировать" if blocked else "🚫 Заблокировать"
+                markup.add(
+                    types.InlineKeyboardButton(block_btn_text, callback_data=f"adm_toggle_{target_uid}"),
+                    types.InlineKeyboardButton("➕ Дать 5 генераций", callback_data=f"adm_give_{target_uid}"),
+                    types.InlineKeyboardButton("🔙 Назад к списку", callback_data="adm_page_0")
+                )
+                
+                user_card_text = (
+                    f"👤 **Карточка пользователя:**\n\n"
+                    f"🆔 **ID:** `{target_uid}`\n"
+                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
+                    f"🎨 **Баланс генераций сегодня:** `{info['balance']}`"
+                )
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    text=user_card_text,
+                    parse_mode=PARSE_MODE,
+                    reply_markup=markup
+                )
+                bot.answer_callback_query(call.id)
+                return {"status": "ok"}
+
+            elif data.startswith("adm_toggle_"):
+                target_uid = int(data.replace("adm_toggle_", ""))
+                currently_blocked = is_user_blocked(target_uid)
+                set_user_blocked(target_uid, not currently_blocked)
+                
+                blocked = not currently_blocked
+                info = get_user_limit_info(target_uid)
+                
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                block_btn_text = "🟢 Разблокировать" if blocked else "🚫 Заблокировать"
+                markup.add(
+                    types.InlineKeyboardButton(block_btn_text, callback_data=f"adm_toggle_{target_uid}"),
+                    types.InlineKeyboardButton("➕ Дать 5 генераций", callback_data=f"adm_give_{target_uid}"),
+                    types.InlineKeyboardButton("🔙 Назад к списку", callback_data="adm_page_0")
+                )
+                
+                user_card_text = (
+                    f"👤 **Карточка пользователя:**\n\n"
+                    f"🆔 **ID:** `{target_uid}`\n"
+                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
+                    f"🎨 **Баланс генераций сегодня:** `{info['balance']}`"
+                )
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    text=user_card_text,
+                    parse_mode=PARSE_MODE,
+                    reply_markup=markup
+                )
+                bot.answer_callback_query(call.id, "Статус изменен!")
+                return {"status": "ok"}
+
+            elif data.startswith("adm_give_"):
+                target_uid = int(data.replace("adm_give_", ""))
+                info = get_user_limit_info(target_uid)
+                new_balance = info["balance"] + 5
+                update_user_balance(target_uid, new_balance)
+
+                blocked = is_user_blocked(target_uid)
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                block_btn_text = "🟢 Разблокировать" if blocked else "🚫 Заблокировать"
+                markup.add(
+                    types.InlineKeyboardButton(block_btn_text, callback_data=f"adm_toggle_{target_uid}"),
+                    types.InlineKeyboardButton("➕ Дать 5 генераций", callback_data=f"adm_give_{target_uid}"),
+                    types.InlineKeyboardButton("🔙 Назад к списку", callback_data="adm_page_0")
+                )
+                
+                user_card_text = (
+                    f"👤 **Карточка пользователя:**\n\n"
+                    f"🆔 **ID:** `{target_uid}`\n"
+                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
+                    f"🎨 **Баланс генераций сегодня:** `{new_balance}`"
+                )
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    text=user_card_text,
+                    parse_mode=PARSE_MODE,
+                    reply_markup=markup
+                )
+                bot.answer_callback_query(call.id, "+5 генераций начислено!")
+                return {"status": "ok"}
+
         if data.startswith("role_"):
             role_key = data.replace("role_", "")
             if role_key in ROLES:
@@ -248,17 +381,14 @@ def process_webhook(update: dict):
         message = update_obj.message
         user_id = message.from_user.id
 
-        # Проверка на блокировку
         if is_user_blocked(user_id):
             bot.reply_to(message, "вы заблокированы по нежелательным для администрации случае")
             return {"status": "ok"}
 
-        # Проверка на техперерыв
         if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
             bot.reply_to(message, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ")
             return {"status": "ok"}
 
-        # Управление техработами через команды (для админа)
         if user_id == ADMIN_CHAT_ID and message.text:
             if message.text == "/maintenance on":
                 set_maintenance_mode(True)
@@ -269,7 +399,7 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "🚀 Режим технических работ **выключен**, бот снова доступен всем.")
                 return {"status": "ok"}
 
-        # --- ОБРАБОТКА АДМИН-ПАНЕЛИ И АВТОРИЗАЦИИ ---
+        # --- ОБРАБОТКА АДМИН-ПАНЕЛИ ---
         if user_id == ADMIN_CHAT_ID and message.text:
             state = user_states.get(user_id)
 
@@ -315,6 +445,18 @@ def process_webhook(update: dict):
                 elif message.text == "3. Дать 5 попыток на /image генерацию":
                     user_states[user_id] = "admin_give_limits_id"
                     bot.reply_to(message, "🎨 Введите **ID пользователя**, которому нужно добавить 5 генераций:")
+                    return {"status": "ok"}
+
+                elif message.text == "4. Список пользователей и управление":
+                    users_list = list(load_users())
+                    total_pages = (len(users_list) + 4) // 5 if users_list else 1
+                    markup = generate_users_page_keyboard(0, total_pages, users_list)
+                    bot.reply_to(
+                        message,
+                        f"📋 **Список пользователей бота**\nВсего запустили: `{len(users_list)}`\nСтраница `1` из `{total_pages}`\n\nНажмите на пользователя для управления:",
+                        parse_mode=PARSE_MODE,
+                        reply_markup=markup
+                    )
                     return {"status": "ok"}
 
             elif state == "admin_send_msg_id":
