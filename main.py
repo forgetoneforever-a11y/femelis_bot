@@ -50,7 +50,6 @@ def save_data(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-# Загружаем лимиты генераций при старте
 user_image_limits = {int(k): v for k, v in load_data(LIMITS_FILE).items()}
 
 def save_limit(user_id, balance):
@@ -327,10 +326,10 @@ def process_webhook(update: dict):
         if user_text == "⚠️ Жалоба / Поддержка":
             user_states[user_id] = "waiting_for_ticket"
             support_text = (
-                "💬 **Служба поддержки**\n\n"
-                "Опишите вашу проблему или оставьте жалобу **одним сообщением**, и я передам её администратору."
+                "💬 Служба поддержки\n\n"
+                "Опишите вашу проблему или оставьте жалобу одним сообщением, и я передам её администратору."
             )
-            bot.reply_to(message, support_text, parse_mode=PARSE_MODE, reply_markup=types.ReplyKeyboardRemove())
+            bot.reply_to(message, support_text, parse_mode=None, reply_markup=types.ReplyKeyboardRemove())
             return {"status": "ok"}
 
         if user_states.get(user_id) == "waiting_for_ticket" and user_text:
@@ -344,10 +343,10 @@ def process_webhook(update: dict):
                 f"Ответить командой:\n/reply {user_id} Текст ответа"
             )
             try:
-                bot.send_message(ADMIN_CHAT_ID, admin_message)
+                bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode=None)
                 bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard())
             except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка при отправке: {e}", reply_markup=get_main_keyboard())
+                bot.reply_to(message, f"❌ Ошибка при отправке: {e}", parse_mode=None)
             return {"status": "ok"}
 
         if user_text:
