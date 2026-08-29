@@ -2,6 +2,7 @@ import os
 import urllib.parse
 import re
 import json
+from datetime import date
 from dotenv import load_dotenv
 from fastapi import FastAPI
 import telebot
@@ -50,11 +51,39 @@ def save_data(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-user_image_limits = {int(k): v for k, v in load_data(LIMITS_FILE).items()}
+# Загружаем структуру лимитов и дат: {user_id: {"balance": 5, "last_date": "2026-06-06"}}
+raw_limits = load_data(LIMITS_FILE)
+user_image_data = {}
+for k, v in raw_limits.items():
+    if isinstance(v, dict):
+        user_image_data[int(k)] = v
+    else:
+        # Миграция со старого формата, если там хранилось просто число
+        user_image_data[int(k)] = {"balance": v, "last_date": str(date.today())}
 
-def save_limit(user_id, balance):
-    user_image_limits[user_id] = balance
-    save_data(LIMITS_FILE, user_image_limits)
+def save_all_limits():
+    save_data(LIMITS_FILE, user_image_data)
+
+def get_user_limit_info(user_id):
+    today_str = str(date.today())
+    if user_id not in user_image_data:
+        # Новичку даем 5 бесплатных генераций на сегодня
+        user_image_data[user_id] = {"balance": 5, "last_date": today_str}
+        save_all_limits()
+    else:
+        # Проверяем, наступил ли новый день
+        data = user_image_data[user_id]
+        if data.get("last_date") != today_str:
+            data["balance"] = 5  # Сбрасываем до 5 бесплатных генераций в день
+            data["last_date"] = today_str
+            save_all_limits()
+            
+    return user_image_data[user_id]
+
+def update_user_balance(user_id, new_balance):
+    info = get_user_limit_info(user_id)
+    info["balance"] = new_balance
+    save_all_limits()
 
 def load_users():
     data = load_data(USERS_FILE)
@@ -91,7 +120,7 @@ def get_main_keyboard():
     btn_start = types.KeyboardButton("🚀 Начать")
     btn_profile = types.KeyboardButton("👤 О себе")
     btn_roles = types.KeyboardButton("🎭 Выбрать роль")
-    btn_premium = types.KeyboardButton("⭐ Premium (5 генераций)")
+    btn_premium = types.KeyboardButton("⭐ Купить генерации")
     btn_support = types.KeyboardButton("⚠️ Жалоба / Поддержка")
     markup.add(btn_start, btn_profile)
     markup.add(btn_roles, btn_premium)
@@ -123,14 +152,14 @@ def process_webhook(update: dict):
         payment = message.successful_payment
 
         if payment.invoice_payload == "buy_5_images":
-            current_balance = user_image_limits.get(user_id, 0)
-            new_balance = current_balance + 5
-            save_limit(user_id, new_balance)
+            info = get_user_limit_info(user_id)
+            new_balance = info["balance"] + 5
+            update_user_balance(user_id, new_balance)
 
             response_text = (
                 f"🎉 **Оплата прошла успешно\!**\n\n"
                 f"Вам зачислено **5 дополнительных генераций** изображений\.\n"
-                f"Баланс платных генераций: `{new_balance}`"
+                f"Текущий баланс: `{new_balance}`"
             )
             bot.reply_to(
                 message,
@@ -229,8 +258,8 @@ def process_webhook(update: dict):
 
             welcome_text = (
                 f"👋 **Привет\!** Я твой ИИ\-ассистент на базе Gemini\.\n\n"
+                f"🎁 Каждой день вам доступно **5 бесплатных генераций** картинок командой `/image`\.\n"
                 f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!\n"
-                f"⭐ Кнопка **«⭐ Premium»** позволяет купить дополнительные генерации картинок за звёзды\.\n"
                 f"🎨 Я также понимаю голос, фото и помню контекст\."
             )
             bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
@@ -247,8 +276,8 @@ def process_webhook(update: dict):
             bot.reply_to(message, "👇 Выберите стиль общения бота:", reply_markup=markup)
             return {"status": "ok"}
 
-        if user_text == "⭐ Premium (5 генераций)" or user_text == "/premium":
-            title = "⭐ Пакет Premium: 5 генераций картинок"
+        if user_text == "⭐ Купить генерации" or user_text == "/premium":
+            title = "⭐ Пакет: 5 дополнительных генераций"
             description = "Дает право на 5 дополнительных запросов в генераторе изображений /image."
             payload = "buy_5_images"
             currency = "XTR"
@@ -275,11 +304,13 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image cyberpunk cat`", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
 
-            current_balance = user_image_limits.get(user_id, 0)
+            info = get_user_limit_info(user_id)
+            current_balance = info["balance"]
+
             if current_balance <= 0:
                 bot.reply_to(
                     message,
-                    "⚠️ У вас закончились дополнительные генерации картинок!\n\nНажмите кнопку **«⭐ Premium (5 генераций)»**, чтобы приобрести пакет за Telegram Stars.",
+                    "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку **«⭐ Купить генерации»**.",
                     parse_mode=PARSE_MODE,
                     reply_markup=get_main_keyboard()
                 )
@@ -288,14 +319,14 @@ def process_webhook(update: dict):
             try:
                 bot.send_chat_action(message.chat.id, 'upload_photo')
                 new_balance = current_balance - 1
-                save_limit(user_id, new_balance)
+                update_user_balance(user_id, new_balance)
 
                 encoded_prompt = urllib.parse.quote(prompt)
                 image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
 
                 caption_text = (
                     f"🎨 **Запрос:** {escape_markdown_v2(prompt)}\n"
-                    f"⭐ **Остаток генераций:** `{new_balance}`"
+                    f"🎁 **Остаток на сегодня:** `{new_balance}`"
                 )
                 bot.send_photo(
                     message.chat.id,
@@ -305,20 +336,21 @@ def process_webhook(update: dict):
                     reply_markup=get_main_keyboard()
                 )
             except Exception as e:
-                save_limit(user_id, current_balance)
+                update_user_balance(user_id, current_balance)
                 bot.reply_to(message, f"❌ Ошибка при генерации изображения: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
             return {"status": "ok"}
 
         if user_text == "👤 О себе":
-            balance = user_image_limits.get(user_id, 0)
+            info = get_user_limit_info(user_id)
+            balance = info["balance"]
             profile_text = (
                 f"👤 **Информация о вашем аккаунте:**\n\n"
                 f"🆔 **ID:** `{user_id}`\n"
                 f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
                 f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
                 f"🌐 **Язык Telegram:** `{language_code}`\n"
-                f"🎨 **Баланс генераций /image:** `{balance}`\n\n"
-                f"*Примечание: точная страна и номер телефона скрыты настройками безопасности Telegram\.*"
+                f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n\n"
+                f"*Примечание: бесплатные генерации обновляются ежедневно\.*"
             )
             bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
             return {"status": "ok"}
