@@ -25,6 +25,7 @@ app = FastAPI()
 USERS_FILE = "users.json"
 LIMITS_FILE = "limits.json"
 SETTINGS_FILE = "settings.json"
+BLOCKED_FILE = "blocked.json"
 
 user_states = {}
 user_chats = {}
@@ -52,7 +53,7 @@ def save_data(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-# Управление статусом технического перерыва
+# Управление техническим перерывом
 def is_maintenance_mode():
     settings = load_data(SETTINGS_FILE)
     return settings.get("maintenance", False)
@@ -62,7 +63,25 @@ def set_maintenance_mode(status: bool):
     settings["maintenance"] = status
     save_data(SETTINGS_FILE, settings)
 
-# Загружаем структуру лимитов и дат: {user_id: {"balance": 5, "last_date": "2026-06-06"}}
+# Черный список заблокированных пользователей
+def load_blocked():
+    data = load_data(BLOCKED_FILE)
+    if isinstance(data, list):
+        return set(data)
+    return set()
+
+def is_user_blocked(user_id):
+    return user_id in load_blocked()
+
+def set_user_blocked(user_id, blocked: bool):
+    blocked_set = load_blocked()
+    if blocked:
+        blocked_set.add(user_id)
+    else:
+        blocked_set.discard(user_id)
+    save_data(BLOCKED_FILE, list(blocked_set))
+
+# Лимиты генераций
 raw_limits = load_data(LIMITS_FILE)
 user_image_data = {}
 for k, v in raw_limits.items():
@@ -85,7 +104,6 @@ def get_user_limit_info(user_id):
             data["balance"] = 5
             data["last_date"] = today_str
             save_all_limits()
-            
     return user_image_data[user_id]
 
 def update_user_balance(user_id, new_balance):
@@ -123,7 +141,7 @@ def reset_user_chat(user_id):
         del user_chats[user_id]
     return get_user_chat(user_id)
 
-def get_main_keyboard():
+def get_main_keyboard(is_admin=False):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn_start = types.KeyboardButton("🚀 Начать")
     btn_profile = types.KeyboardButton("👤 О себе")
@@ -133,6 +151,19 @@ def get_main_keyboard():
     markup.add(btn_start, btn_profile)
     markup.add(btn_roles, btn_premium)
     markup.add(btn_support)
+    
+    if is_admin:
+        btn_admin = types.KeyboardButton("⚙️ Админ-панель")
+        markup.add(btn_admin)
+    return markup
+
+def get_admin_panel_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    btn1 = types.KeyboardButton("1. Отправить личное сообщение пользователю")
+    btn2 = types.KeyboardButton("2. Заблокировать / Разблокировать пользователя")
+    btn3 = types.KeyboardButton("3. Дать 5 попыток на /image генерацию")
+    btn_exit = types.KeyboardButton("🚪 Выйти из админ-панели")
+    markup.add(btn1, btn2, btn3, btn_exit)
     return markup
 
 def escape_markdown_v2(text):
@@ -158,7 +189,10 @@ def process_webhook(update: dict):
         message = update_obj.message
         user_id = message.from_user.id
         
-        # Админ может платить или тестировать, но проверим техработы
+        if is_user_blocked(user_id):
+            bot.reply_to(message, "вы заблокированы по нежелательным для администрации случае")
+            return {"status": "ok"}
+
         if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
             bot.reply_to(message, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ")
             return {"status": "ok"}
@@ -178,7 +212,7 @@ def process_webhook(update: dict):
                 message,
                 response_text,
                 parse_mode=PARSE_MODE,
-                reply_markup=get_main_keyboard()
+                reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
             )
         return {"status": "ok"}
 
@@ -186,6 +220,10 @@ def process_webhook(update: dict):
         call = update_obj.callback_query
         user_id = call.from_user.id
         
+        if is_user_blocked(user_id):
+            bot.answer_callback_query(call.id, "вы заблокированы по нежелательным для администрации случае", show_alert=True)
+            return {"status": "ok"}
+
         if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
             bot.answer_callback_query(call.id, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ", show_alert=True)
             return {"status": "ok"}
@@ -210,12 +248,17 @@ def process_webhook(update: dict):
         message = update_obj.message
         user_id = message.from_user.id
 
-        # --- ПРОВЕРКА НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ ---
+        # Проверка на блокировку
+        if is_user_blocked(user_id):
+            bot.reply_to(message, "вы заблокированы по нежелательным для администрации случае")
+            return {"status": "ok"}
+
+        # Проверка на техперерыв
         if is_maintenance_mode() and user_id != ADMIN_CHAT_ID:
             bot.reply_to(message, "БОТ ЗАКРЫТ НА ТЕХНИЧЕСКИЙ ПЕРЕРЫВ")
             return {"status": "ok"}
 
-        # Администратор может управлять режимом техработ прямо из чата
+        # Управление техработами через команды (для админа)
         if user_id == ADMIN_CHAT_ID and message.text:
             if message.text == "/maintenance on":
                 set_maintenance_mode(True)
@@ -226,7 +269,102 @@ def process_webhook(update: dict):
                 bot.reply_to(message, "🚀 Режим технических работ **выключен**, бот снова доступен всем.")
                 return {"status": "ok"}
 
-        # Обработка текста
+        # --- ОБРАБОТКА АДМИН-ПАНЕЛИ И АВТОРИЗАЦИИ ---
+        if user_id == ADMIN_CHAT_ID and message.text:
+            state = user_states.get(user_id)
+
+            if message.text == "⚙️ Админ-панель":
+                user_states[user_id] = "waiting_for_login"
+                bot.reply_to(message, "🔐 Введите логин администратора:", reply_markup=types.ReplyKeyboardRemove())
+                return {"status": "ok"}
+
+            elif state == "waiting_for_login":
+                if message.text == "sadbaby":
+                    user_states[user_id] = "waiting_for_password"
+                    bot.reply_to(message, "🔑 Логин верный. Введите пароль администратора:")
+                else:
+                    user_states[user_id] = "normal"
+                    bot.reply_to(message, "❌ Неверный логин. Авторизация отменена.", reply_markup=get_main_keyboard(True))
+                return {"status": "ok"}
+
+            elif state == "waiting_for_password":
+                if message.text == "hatemylife":
+                    user_states[user_id] = "admin_logged_in"
+                    bot.reply_to(message, "✅ **Успешный вход в панель управления пользователями\!**\n\nВыберите действие ниже:", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
+                else:
+                    user_states[user_id] = "normal"
+                    bot.reply_to(message, "❌ Неверный пароль. Авторизация отменена.", reply_markup=get_main_keyboard(True))
+                return {"status": "ok"}
+
+            elif state == "admin_logged_in":
+                if message.text == "🚪 Выйти из админ-панели":
+                    user_states[user_id] = "normal"
+                    bot.reply_to(message, "🚪 Выход из админ-панели выполнен.", reply_markup=get_main_keyboard(True))
+                    return {"status": "ok"}
+
+                elif message.text == "1. Отправить личное сообщение пользователю":
+                    user_states[user_id] = "admin_send_msg_id"
+                    bot.reply_to(message, "✍️ Введите **ID пользователя**, которому хотите отправить сообщение:")
+                    return {"status": "ok"}
+
+                elif message.text == "2. Заблокировать / Разблокировать пользователя":
+                    user_states[user_id] = "admin_block_id"
+                    bot.reply_to(message, "🛡 Введите **ID пользователя**, которого нужно заблокировать (или разблокировать):")
+                    return {"status": "ok"}
+
+                elif message.text == "3. Дать 5 попыток на /image генерацию":
+                    user_states[user_id] = "admin_give_limits_id"
+                    bot.reply_to(message, "🎨 Введите **ID пользователя**, которому нужно добавить 5 генераций:")
+                    return {"status": "ok"}
+
+            elif state == "admin_send_msg_id":
+                try:
+                    target_id = int(message.text.strip())
+                    user_states[user_id] = {"substate": "admin_send_msg_text", "target": target_id}
+                    bot.reply_to(message, f"💬 Введите текст сообщения для пользователя `{target_id}`:")
+                except ValueError:
+                    bot.reply_to(message, "❌ Неверный ID. Введите числовой ID пользователя:")
+                return {"status": "ok"}
+
+            elif isinstance(state, dict) and state.get("substate") == "admin_send_msg_text":
+                target_id = state["target"]
+                text_to_send = message.text
+                user_states[user_id] = "admin_logged_in"
+                try:
+                    bot.send_message(target_id, f"💬 **Сообщение от администрации:**\n\n{text_to_send}")
+                    bot.reply_to(message, f"✅ Сообщение успешно отправлено пользователю `{target_id}`!", reply_markup=get_admin_panel_keyboard())
+                except Exception as e:
+                    bot.reply_to(message, f"❌ Ошибка отправки: {e}", reply_markup=get_admin_panel_keyboard())
+                return {"status": "ok"}
+
+            elif state == "admin_block_id":
+                try:
+                    target_id = int(message.text.strip())
+                    user_states[user_id] = "admin_logged_in"
+                    currently_blocked = is_user_blocked(target_id)
+                    set_user_blocked(target_id, not currently_blocked)
+                    
+                    status_text = "разблокирован ✅" if currently_blocked else "заблокирован 🚫"
+                    bot.reply_to(message, f"✅ Пользователь `{target_id}` теперь **{status_text}**.", reply_markup=get_admin_panel_keyboard())
+                except ValueError:
+                    bot.reply_to(message, "❌ Неверный ID. Попробуйте снова или выберите пункт меню:")
+                return {"status": "ok"}
+
+            elif state == "admin_give_limits_id":
+                try:
+                    target_id = int(message.text.strip())
+                    user_states[user_id] = "admin_logged_in"
+                    
+                    info = get_user_limit_info(target_id)
+                    new_balance = info["balance"] + 5
+                    update_user_balance(target_id, new_balance)
+                    
+                    bot.reply_to(message, f"✅ Пользователю `{target_id}` успешно начислено 5 генераций. Новый баланс: `{new_balance}`.", reply_markup=get_admin_panel_keyboard())
+                except ValueError:
+                    bot.reply_to(message, "❌ Неверный ID. Попробуйте снова или выберите пункт меню:")
+                return {"status": "ok"}
+
+        # Обработка текста обычных пользователей
         if message.text:
             user_text = message.text
             save_user(user_id)
@@ -239,54 +377,6 @@ def process_webhook(update: dict):
             full_name = f"{first_name} {last_name}".strip()
             user_tag = f"@{username}" if username else "нет юзернейма"
 
-            if user_id == ADMIN_CHAT_ID and user_text.startswith("/reply "):
-                try:
-                    parts = user_text.split(" ", 2)
-                    target_user_id = int(parts[1])
-                    reply_text = parts[2]
-
-                    bot.send_message(
-                        target_user_id,
-                        f"💬 **Ответ от администратора:**\n\n{escape_markdown_v2(reply_text)}",
-                        parse_mode=PARSE_MODE
-                    )
-                    bot.reply_to(message, f"✅ Ответ успешно отправлен пользователю `{target_user_id}`!", parse_mode=PARSE_MODE)
-                    return {"status": "ok"}
-                except Exception as e:
-                    bot.reply_to(message, f"❌ Ошибка отправки: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
-                    return {"status": "ok"}
-
-            if user_id == ADMIN_CHAT_ID and user_text.startswith("/broadcast "):
-                broadcast_text = user_text.replace("/broadcast", "").strip()
-                if not broadcast_text:
-                    bot.reply_to(message, "⚠️ Укажите текст для рассылки после команды `/broadcast`", parse_mode=PARSE_MODE)
-                    return {"status": "ok"}
-
-                users = set(load_users())
-                success_count = 0
-                fail_count = 0
-
-                for uid in users:
-                    if int(uid) == int(ADMIN_CHAT_ID):
-                        continue
-
-                    try:
-                        bot.send_message(
-                            int(uid), 
-                            f"📢 **Обновление от администратора:**\n\n{escape_markdown_v2(broadcast_text)}", 
-                            parse_mode=PARSE_MODE
-                        )
-                        success_count += 1
-                    except Exception:
-                        fail_count += 1
-
-                bot.reply_to(
-                    message, 
-                    f"✅ **Рассылка завершена\!**\n\nУспешно доставлено: `{success_count}`\nОшибок: `{fail_count}`", 
-                    parse_mode=PARSE_MODE
-                )
-                return {"status": "ok"}
-
             if user_text == "🚀 Начать" or user_text.startswith("/start"):
                 user_states[user_id] = "normal"
                 reset_user_chat(user_id)
@@ -297,7 +387,7 @@ def process_webhook(update: dict):
                     f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!\n"
                     f"🎨 Я также понимаю голос, фото и помню контекст\."
                 )
-                bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
 
             if user_text == "🎭 Выбрать роль" or user_text == "/role":
@@ -330,7 +420,7 @@ def process_webhook(update: dict):
                         start_parameter="buy-images"
                     )
                 except Exception as e:
-                    bot.reply_to(message, f"❌ Ошибка создания счета: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                    bot.reply_to(message, f"❌ Ошибка создания счета: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
 
             if user_text.startswith("/image "):
@@ -347,7 +437,7 @@ def process_webhook(update: dict):
                         message,
                         "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку **«⭐ Купить генерации»**.",
                         parse_mode=PARSE_MODE,
-                        reply_markup=get_main_keyboard()
+                        reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
                     )
                     return {"status": "ok"}
 
@@ -368,7 +458,7 @@ def process_webhook(update: dict):
                         photo=image_url,
                         caption=caption_text,
                         parse_mode=PARSE_MODE,
-                        reply_markup=get_main_keyboard()
+                        reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
                     )
                 except Exception as e:
                     update_user_balance(user_id, current_balance)
@@ -387,7 +477,7 @@ def process_webhook(update: dict):
                     f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n\n"
                     f"*Примечание: бесплатные генерации обновляются ежедневно\.*"
                 )
-                bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
 
             if user_text == "⚠️ Жалоба / Поддержка":
@@ -406,12 +496,11 @@ def process_webhook(update: dict):
                     f"👤 Имя: {full_name}\n"
                     f"🔗 Юзернейм: {user_tag}\n"
                     f"🆔 ID: {user_id}\n"
-                    f"💬 Текст: {user_text}\n\n"
-                    f"Ответить командой:\n/reply {user_id} Текст ответа"
+                    f"💬 Текст: {user_text}\n"
                 )
                 try:
                     bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode=None)
-                    bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard())
+                    bot.reply_to(message, "✅ Сообщение успешно отправлено администратору!", reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 except Exception as e:
                     bot.reply_to(message, f"❌ Ошибка при отправке: {e}", parse_mode=None)
                 return {"status": "ok"}
@@ -420,7 +509,7 @@ def process_webhook(update: dict):
                 chat = get_user_chat(user_id)
                 response = chat.send_message(user_text)
                 safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
 
@@ -443,7 +532,7 @@ def process_webhook(update: dict):
                 response = chat.send_message([image_file, safe_user_prompt])
                 
                 safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
 
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
@@ -468,7 +557,7 @@ def process_webhook(update: dict):
                 ])
 
                 safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard())
+                bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
 
                 if os.path.exists(temp_audio):
                     os.remove(temp_audio)
