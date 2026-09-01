@@ -33,7 +33,7 @@ user_states = {}
 user_chats = {}
 user_roles = {}
 
-# Используем HTML, так как он отлично подходит для формул в коде и не ломается от плюсов/минусов
+# Используем HTML для форматирования без ошибок
 PARSE_MODE = "HTML"
 
 ROLES = {
@@ -149,7 +149,6 @@ def get_user_chat(user_id):
         role_key = user_roles.get(user_id, "default")
         base_instruction = ROLES.get(role_key, ROLES["default"])
         
-        # Добавляем жесткое правило против LaTeX для модели, чтобы она выдавала красивый текст
         system_instruction = (
             f"{base_instruction}\n\n"
             "Важное правило форматирования: если нужно написать формулу или математическое выражение, "
@@ -169,6 +168,18 @@ def reset_user_chat(user_id):
     if user_id in user_chats:
         del user_chats[user_id]
     return get_user_chat(user_id)
+
+def send_long_message(bot_instance, chat_id, text, parse_mode=None, reply_markup=None):
+    """Безопасная отправка длинных сообщений (обход лимита Telegram в 4096 символов)."""
+    max_length = 4000
+    if len(text) <= max_length:
+        bot_instance.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return
+
+    parts = [text[i:i + max_length] for i in range(0, len(text), max_length)]
+    for index, part in enumerate(parts):
+        markup = reply_markup if index == len(parts) - 1 else None
+        bot_instance.send_message(chat_id, part, parse_mode=parse_mode, reply_markup=markup)
 
 def get_main_keyboard(is_admin=False):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -565,7 +576,6 @@ def process_webhook(update: dict):
             first_name = message.from_user.first_name or ""
             last_name = message.from_user.last_name or ""
             username = message.from_user.username
-            language_code = message.from_user.language_code or "не указан"
 
             full_name = f"{first_name} {last_name}".strip()
             user_tag = f"@{username}" if username else "нет юзернейма"
@@ -733,7 +743,14 @@ def process_webhook(update: dict):
             try:
                 chat = get_user_chat(user_id)
                 response = chat.send_message(user_text)
-                bot.reply_to(message, response.text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                # Используем безопасную отправку длинных сообщений вместо bot.reply_to
+                send_long_message(
+                    bot, 
+                    message.chat.id, 
+                    response.text, 
+                    parse_mode=PARSE_MODE, 
+                    reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
+                )
             except Exception as e:
                 bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", parse_mode=PARSE_MODE)
 
@@ -754,7 +771,13 @@ def process_webhook(update: dict):
                 chat = get_user_chat(user_id)
                 response = chat.send_message([image_file, user_prompt])
                 
-                bot.reply_to(message, response.text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                send_long_message(
+                    bot, 
+                    message.chat.id, 
+                    response.text, 
+                    parse_mode=PARSE_MODE, 
+                    reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
+                )
 
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
@@ -778,7 +801,14 @@ def process_webhook(update: dict):
                     "Распознай речь из этого голосового сообщения и ответь на него."
                 ])
 
-                bot.reply_to(message, f"🎙 <b>Ответ:</b>\n\n{response.text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                full_reply = f"🎙 <b>Ответ:</b>\n\n{response.text}"
+                send_long_message(
+                    bot, 
+                    message.chat.id, 
+                    full_reply, 
+                    parse_mode=PARSE_MODE, 
+                    reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
+                )
 
                 if os.path.exists(temp_audio):
                     os.remove(temp_audio)
