@@ -33,7 +33,8 @@ user_states = {}
 user_chats = {}
 user_roles = {}
 
-PARSE_MODE = "MarkdownV2"
+# Используем HTML, так как он отлично подходит для формул в коде и не ломается от плюсов/минусов
+PARSE_MODE = "HTML"
 
 ROLES = {
     "default": "Ты полезный, дружелюбный и эрудированный ИИ-ассистент.",
@@ -146,7 +147,15 @@ def save_user(user_id):
 def get_user_chat(user_id):
     if user_id not in user_chats:
         role_key = user_roles.get(user_id, "default")
-        system_instruction = ROLES.get(role_key, ROLES["default"])
+        base_instruction = ROLES.get(role_key, ROLES["default"])
+        
+        # Добавляем жесткое правило против LaTeX для модели, чтобы она выдавала красивый текст
+        system_instruction = (
+            f"{base_instruction}\n\n"
+            "Важное правило форматирования: если нужно написать формулу или математическое выражение, "
+            "НИКОГДА не используй LaTeX-блоки ($$...$$, \\quad, \\text). "
+            "Используй простой текст с символами Unicode (·, σ, Δ) и оборачивай формулы в теги <code>...</code>."
+        )
 
         user_chats[user_id] = client.chats.create(
             model="gemini-3.6-flash",
@@ -212,11 +221,6 @@ def generate_users_page_keyboard(page: int, total_pages: int, users_list):
         
     return markup
 
-def escape_markdown_v2(text):
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    regex = re.compile(f'([{re.escape(escape_chars)}])')
-    return regex.sub(r'\\\1', text)
-
 @app.on_event("startup")
 def setup_webhook():
     webhook_url = f"https://femelis-bot.onrender.com/{TELEGRAM_TOKEN}"
@@ -250,9 +254,9 @@ def process_webhook(update: dict):
             update_user_balance(user_id, new_balance)
 
             response_text = (
-                f"🎉 **Оплата прошла успешно\!**\n\n"
-                f"Вам зачислено **\\+5 дополнительных генераций** изображений\.\n"
-                f"Текущий баланс: `{new_balance}`"
+                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                f"Вам зачислено <b>+5 дополнительных генераций</b> изображений.\n"
+                f"Текущий баланс: <code>{new_balance}</code>"
             )
             bot.reply_to(
                 message,
@@ -286,7 +290,7 @@ def process_webhook(update: dict):
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
                     message_id=call.message.id,
-                    text=f"📋 **Список пользователей бота**\nВсего запустили: `{len(users_list)}`\nСтраница `{page + 1}` из `{total_pages}`\n\nНажмите на пользователя для управления:",
+                    text=f"📋 <b>Список пользователей бота</b>\nВсего запустили: <code>{len(users_list)}</code>\nСтраница <code>{page + 1}</code> из <code>{total_pages}</code>\n\nНажмите на пользователя для управления:",
                     parse_mode=PARSE_MODE,
                     reply_markup=markup
                 )
@@ -307,10 +311,10 @@ def process_webhook(update: dict):
                 )
                 
                 user_card_text = (
-                    f"👤 **Карточка пользователя:**\n\n"
-                    f"🆔 **ID:** `{target_uid}`\n"
-                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
-                    f"🎨 **Баланс генераций сегодня:** `{info['balance']}`"
+                    f"👤 <b>Карточка пользователя:</b>\n\n"
+                    f"🆔 <b>ID:</b> <code>{target_uid}</code>\n"
+                    f"🛡 <b>Статус:</b> <code>{'Заблокирован' if blocked else 'Активен'}</code>\n"
+                    f"🎨 <b>Баланс генераций сегодня:</b> <code>{info['balance']}</code>"
                 )
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
@@ -339,10 +343,10 @@ def process_webhook(update: dict):
                 )
                 
                 user_card_text = (
-                    f"👤 **Карточка пользователя:**\n\n"
-                    f"🆔 **ID:** `{target_uid}`\n"
-                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
-                    f"🎨 **Баланс генераций сегодня:** `{info['balance']}`"
+                    f"👤 <b>Карточка пользователя:</b>\n\n"
+                    f"🆔 <b>ID:</b> <code>{target_uid}</code>\n"
+                    f"🛡 <b>Статус:</b> <code>{'Заблокирован' if blocked else 'Активен'}</code>\n"
+                    f"🎨 <b>Баланс генераций сегодня:</b> <code>{info['balance']}</code>"
                 )
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
@@ -370,10 +374,10 @@ def process_webhook(update: dict):
                 )
                 
                 user_card_text = (
-                    f"👤 **Карточка пользователя:**\n\n"
-                    f"🆔 **ID:** `{target_uid}`\n"
-                    f"🛡 **Статус:** `{'Заблокирован' if blocked else 'Активен'}`\n"
-                    f"🎨 **Баланс генераций сегодня:** `{new_balance}`"
+                    f"👤 <b>Карточка пользователя:</b>\n\n"
+                    f"🆔 <b>ID:</b> <code>{target_uid}</code>\n"
+                    f"🛡 <b>Статус:</b> <code>{'Заблокирован' if blocked else 'Активен'}</code>\n"
+                    f"🎨 <b>Баланс генераций сегодня:</b> <code>{new_balance}</code>"
                 )
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
@@ -395,7 +399,7 @@ def process_webhook(update: dict):
                 bot.edit_message_text(
                     chat_id=call.message.chat.id,
                     message_id=call.message.id,
-                    text=f"✅ Успешно установлена роль: **{role_key}**\.\n\nМожете продолжать общение\!",
+                    text=f"✅ Успешно установлена роль: <b>{role_key}</b>.\n\nМожете продолжать общение!",
                     parse_mode=PARSE_MODE
                 )
         return {"status": "ok"}
@@ -415,11 +419,11 @@ def process_webhook(update: dict):
         if user_id == ADMIN_CHAT_ID and message.text:
             if message.text == "/maintenance on":
                 set_maintenance_mode(True)
-                bot.reply_to(message, "🛠 Режим технических работ **включен**.")
+                bot.reply_to(message, "🛠 Режим технических работ <b>включен</b>.", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
             elif message.text == "/maintenance off":
                 set_maintenance_mode(False)
-                bot.reply_to(message, "🚀 Режим технических работ **выключен**, бот снова доступен всем.")
+                bot.reply_to(message, "🚀 Режим технических работ <b>выключен</b>, бот снова доступен всем.", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
 
         # --- ОБРАБОТКА АДМИН-ПАНЕЛИ ---
@@ -443,7 +447,7 @@ def process_webhook(update: dict):
             elif state == "waiting_for_password":
                 if message.text == "hatemylife":
                     user_states[user_id] = "admin_logged_in"
-                    bot.reply_to(message, "✅ **Успешный вход в панель управления\!**\n\nВыберите действие ниже:", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
+                    bot.reply_to(message, "✅ <b>Успешный вход в панель управления!</b>\n\nВыберите действие ниже:", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                 else:
                     user_states[user_id] = "normal"
                     bot.reply_to(message, "❌ Неверный пароль. Авторизация отменена.", reply_markup=get_main_keyboard(True))
@@ -457,17 +461,17 @@ def process_webhook(update: dict):
 
                 elif message.text == "1. Отправить личное сообщение пользователю":
                     user_states[user_id] = "admin_send_msg_id"
-                    bot.reply_to(message, "✍️ Введите **ID пользователя**, которому хотите отправить сообщение:")
+                    bot.reply_to(message, "✍️ Введите <b>ID пользователя</b>, которому хотите отправить сообщение:", parse_mode=PARSE_MODE)
                     return {"status": "ok"}
 
                 elif message.text == "2. Заблокировать / Разблокировать пользователя":
                     user_states[user_id] = "admin_block_id"
-                    bot.reply_to(message, "🛡 Введите **ID пользователя**, которого нужно заблокировать (или разблокировать):")
+                    bot.reply_to(message, "🛡 Введите <b>ID пользователя</b>, которого нужно заблокировать (или разблокировать):", parse_mode=PARSE_MODE)
                     return {"status": "ok"}
 
                 elif message.text == "3. Дать 5 попыток на /image генерацию":
                     user_states[user_id] = "admin_give_limits_id"
-                    bot.reply_to(message, "🎨 Введите **ID пользователя**, которому нужно добавить 5 генераций:")
+                    bot.reply_to(message, "🎨 Введите <b>ID пользователя</b>, которому нужно добавить 5 генераций:", parse_mode=PARSE_MODE)
                     return {"status": "ok"}
 
                 elif message.text == "4. Список пользователей и управление":
@@ -476,7 +480,7 @@ def process_webhook(update: dict):
                     markup = generate_users_page_keyboard(0, total_pages, users_list)
                     bot.reply_to(
                         message,
-                        f"📋 **Список пользователей бота**\nВсего запустили: `{len(users_list)}`\nСтраница `1` из `{total_pages}`\n\nНажмите на пользователя для управления:",
+                        f"📋 <b>Список пользователей бота</b>\nВсего запустили: <code>{len(users_list)}</code>\nСтраница <code>1</code> из <code>{total_pages}</code>\n\nНажмите на пользователя для управления:",
                         parse_mode=PARSE_MODE,
                         reply_markup=markup
                     )
@@ -496,12 +500,12 @@ def process_webhook(update: dict):
                     blocked_count = len(load_blocked())
 
                     stats_text = (
-                        f"📊 **Статистика бота Femelis AI**\n\n"
-                        f"👥 **Всего пользователей в базе:** `{total_users}`\n"
-                        f"🟢 **Активных за сегодня:** `{active_today}`\n"
-                        f"🚫 **Заблокированных:** `{blocked_count}`\n"
-                        f"🎨 **Суммарно потрачено генераций:** `{total_spent}`\n\n"
-                        f"📅 *Дата отчета:* `{today_str}`"
+                        f"📊 <b>Статистика бота Femelis AI</b>\n\n"
+                        f"👥 <b>Всего пользователей в базе:</b> <code>{total_users}</code>\n"
+                        f"🟢 <b>Активных за сегодня:</b> <code>{active_today}</code>\n"
+                        f"🚫 <b>Заблокированных:</b> <code>{blocked_count}</code>\n"
+                        f"🎨 <b>Суммарно потрачено генераций:</b> <code>{total_spent}</code>\n\n"
+                        f"📅 <i>Дата отчета:</i> <code>{today_str}</code>"
                     )
                     bot.reply_to(message, stats_text, parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                     return {"status": "ok"}
@@ -510,7 +514,7 @@ def process_webhook(update: dict):
                 try:
                     target_id = int(message.text.strip())
                     user_states[user_id] = {"substate": "admin_send_msg_text", "target": target_id}
-                    bot.reply_to(message, f"💬 Введите текст сообщения для пользователя `{target_id}`:")
+                    bot.reply_to(message, f"💬 Введите текст сообщения для пользователя <code>{target_id}</code>:", parse_mode=PARSE_MODE)
                 except ValueError:
                     bot.reply_to(message, "❌ Неверный ID. Введите числовой ID пользователя:")
                 return {"status": "ok"}
@@ -520,8 +524,8 @@ def process_webhook(update: dict):
                 text_to_send = message.text
                 user_states[user_id] = "admin_logged_in"
                 try:
-                    bot.send_message(target_id, f"💬 **Сообщение от администрации:**\n\n{text_to_send}")
-                    bot.reply_to(message, f"✅ Сообщение успешно отправлено пользователю `{target_id}`!", reply_markup=get_admin_panel_keyboard())
+                    bot.send_message(target_id, f"💬 <b>Сообщение от администрации:</b>\n\n{text_to_send}", parse_mode=PARSE_MODE)
+                    bot.reply_to(message, f"✅ Сообщение успешно отправлено пользователю <code>{target_id}</code>!", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                 except Exception as e:
                     bot.reply_to(message, f"❌ Ошибка отправки: {e}", reply_markup=get_admin_panel_keyboard())
                 return {"status": "ok"}
@@ -534,7 +538,7 @@ def process_webhook(update: dict):
                     set_user_blocked(target_id, not currently_blocked)
                     
                     status_text = "разблокирован ✅" if currently_blocked else "заблокирован 🚫"
-                    bot.reply_to(message, f"✅ Пользователь `{target_id}` теперь **{status_text}**.", reply_markup=get_admin_panel_keyboard())
+                    bot.reply_to(message, f"✅ Пользователь <code>{target_id}</code> теперь <b>{status_text}</b>.", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                 except ValueError:
                     bot.reply_to(message, "❌ Неверный ID. Попробуйте снова или выберите пункт меню:")
                 return {"status": "ok"}
@@ -548,7 +552,7 @@ def process_webhook(update: dict):
                     new_balance = info["balance"] + 5
                     update_user_balance(target_id, new_balance)
                     
-                    bot.reply_to(message, f"✅ Пользователю `{target_id}` успешно начислено 5 генераций. Новый баланс: `{new_balance}`.", reply_markup=get_admin_panel_keyboard())
+                    bot.reply_to(message, f"✅ Пользователю <code>{target_id}</code> успешно начислено 5 генераций. Новый баланс: <code>{new_balance}</code>.", parse_mode=PARSE_MODE, reply_markup=get_admin_panel_keyboard())
                 except ValueError:
                     bot.reply_to(message, "❌ Неверный ID. Попробуйте снова или выберите пункт меню:")
                 return {"status": "ok"}
@@ -585,7 +589,7 @@ def process_webhook(update: dict):
                                 try:
                                     bot.send_message(
                                         referrer_id,
-                                        "🎉 По вашей ссылке зарегистрировался новый друг!\n🎁 Вам начислено **\\+3 бонусных генерации** изображений.",
+                                        "🎉 По вашей ссылке зарегистрировался новый друг!\n🎁 Вам начислено <b>+3 бонусные генерации</b> изображений.",
                                         parse_mode=PARSE_MODE
                                     )
                                 except Exception:
@@ -594,10 +598,10 @@ def process_webhook(update: dict):
                         pass
 
                 welcome_text = (
-                    f"👋 **Привет\!** Я твой ИИ\-ассистент на базе Gemini\.\n\n"
-                    f"🎁 Каждой день вам доступно **5 бесплатных генераций** картинок командой `/image`\.\n"
-                    f"👥 Приглашайте друзей по реферальной ссылке и получайте **\\+3 генерации** за каждого\!\n"
-                    f"🎭 Настраивай стиль общения кнопкой **«🎭 Выбрать роль»**\!"
+                    f"👋 <b>Привет!</b> Я твой ИИ-ассистент на базе Gemini.\n\n"
+                    f"🎁 Каждой день вам доступно <b>5 бесплатных генераций</b> картинок командой <code>/image</code>.\n"
+                    f"👥 Приглашайте друзей по реферальной ссылке и получайте <b>+3 генерации</b> за каждого!\n"
+                    f"🎭 Настраивай стиль общения кнопкой <b>«🎭 Выбрать роль»</b>!"
                 )
                 bot.reply_to(message, welcome_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
@@ -632,13 +636,13 @@ def process_webhook(update: dict):
                         start_parameter="buy-images"
                     )
                 except Exception as e:
-                    bot.reply_to(message, f"❌ Ошибка создания счета: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                    bot.reply_to(message, f"❌ Ошибка создания счета: {e}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
 
             if user_text.startswith("/image "):
                 prompt = user_text.replace("/image", "").strip()
                 if not prompt:
-                    bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n`/image cyberpunk cat`", parse_mode=PARSE_MODE)
+                    bot.reply_to(message, "⚠️ Пожалуйста, укажите описание для картинки после команды, например:\n<code>/image cyberpunk cat</code>", parse_mode=PARSE_MODE)
                     return {"status": "ok"}
 
                 info = get_user_limit_info(user_id)
@@ -647,7 +651,7 @@ def process_webhook(update: dict):
                 if current_balance <= 0:
                     bot.reply_to(
                         message,
-                        "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку **«⭐ Купить генерации»**.",
+                        "⚠️ У вас закончились бесплатные генерации на сегодня!\n\nОни обновятся завтра, либо вы можете приобрести пакет через кнопку <b>«⭐ Купить генерации»</b>.",
                         parse_mode=PARSE_MODE,
                         reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
                     )
@@ -663,8 +667,8 @@ def process_webhook(update: dict):
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
 
                     caption_text = (
-                        f"🎨 **Запрос:** {escape_markdown_v2(prompt)}\n"
-                        f"🎁 **Остаток на сегодня:** `{new_balance}`"
+                        f"🎨 <b>Запрос:</b> {prompt}\n"
+                        f"🎁 <b>Остаток на сегодня:</b> <code>{new_balance}</code>"
                     )
                     bot.send_photo(
                         message.chat.id,
@@ -675,7 +679,7 @@ def process_webhook(update: dict):
                     )
                 except Exception as e:
                     update_user_balance(user_id, current_balance)
-                    bot.reply_to(message, f"❌ Ошибка при генерации изображения: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                    bot.reply_to(message, f"❌ Ошибка при генерации изображения: {e}", parse_mode=PARSE_MODE)
                 return {"status": "ok"}
 
             if user_text == "👤 О себе":
@@ -689,14 +693,14 @@ def process_webhook(update: dict):
                 ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
 
                 profile_text = (
-                    f"👤 **Информация о вашем аккаунте:**\n\n"
-                    f"🆔 **ID:** `{user_id}`\n"
-                    f"📌 **Имя:** {escape_markdown_v2(full_name)}\n"
-                    f"🔗 **Username:** {escape_markdown_v2(user_tag)}\n"
-                    f"🎨 **Доступно генераций сегодня:** `{balance}` из 5\n"
-                    f"👥 **Приглашено друзей:** `{invited_count}`\n\n"
-                    f"🔗 **Ваша реферальная ссылка:**\n`{ref_link}`\n\n"
-                    f"_Отправьте её другу — и вы оба получите по 3 бонусные генерации\!_"
+                    f"👤 <b>Информация о вашем аккаунте:</b>\n\n"
+                    f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+                    f"📌 <b>Имя:</b> {full_name}\n"
+                    f"🔗 <b>Username:</b> {user_tag}\n"
+                    f"🎨 <b>Доступно генераций сегодня:</b> <code>{balance}</code> из 5\n"
+                    f"👥 <b>Приглашено друзей:</b> <code>{invited_count}</code>\n\n"
+                    f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>\n\n"
+                    f"<i>Отправьте её другу — и вы оба получите по 3 бонусные генерации!</i>"
                 )
                 bot.reply_to(message, profile_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
                 return {"status": "ok"}
@@ -729,10 +733,9 @@ def process_webhook(update: dict):
             try:
                 chat = get_user_chat(user_id)
                 response = chat.send_message(user_text)
-                safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                bot.reply_to(message, response.text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
             except Exception as e:
-                bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                bot.reply_to(message, f"❌ Ошибка при запросе к нейросети: {e}", parse_mode=PARSE_MODE)
 
         # Обработка фото
         elif message.photo:
@@ -746,19 +749,17 @@ def process_webhook(update: dict):
                     f.write(downloaded_file)
 
                 user_prompt = message.caption or "Опиши, что изображено на этой фотографии, в соответствии с твоей ролью."
-                safe_user_prompt = escape_markdown_v2(user_prompt)
 
                 image_file = client.files.upload(file=temp_filename)
                 chat = get_user_chat(user_id)
-                response = chat.send_message([image_file, safe_user_prompt])
+                response = chat.send_message([image_file, user_prompt])
                 
-                safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, safe_response_text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                bot.reply_to(message, response.text, parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
 
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
             except Exception as e:
-                bot.reply_to(message, f"❌ Не удалось обработать изображение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                bot.reply_to(message, f"❌ Не удалось обработать изображение: {e}", parse_mode=PARSE_MODE)
 
         # Обработка голоса
         elif message.voice:
@@ -777,13 +778,12 @@ def process_webhook(update: dict):
                     "Распознай речь из этого голосового сообщения и ответь на него."
                 ])
 
-                safe_response_text = escape_markdown_v2(response.text)
-                bot.reply_to(message, f"🎙 *Ответ:*\n\n{safe_response_text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+                bot.reply_to(message, f"🎙 <b>Ответ:</b>\n\n{response.text}", parse_mode=PARSE_MODE, reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
 
                 if os.path.exists(temp_audio):
                     os.remove(temp_audio)
             except Exception as e:
-                bot.reply_to(message, f"❌ Не удалось обработать голосовое сообщение: {escape_markdown_v2(str(e))}", parse_mode=PARSE_MODE)
+                bot.reply_to(message, f"❌ Не удалось обработать голосовое сообщение: {e}", parse_mode=PARSE_MODE)
 
     return {"status": "ok"}
 
